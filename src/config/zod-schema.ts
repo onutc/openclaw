@@ -477,6 +477,7 @@ export const ClawdbotSchema = z.object({
         )
         .optional(),
       workspace: z.string().optional(),
+      skipBootstrap: z.boolean().optional(),
       userTimezone: z.string().optional(),
       contextTokens: z.number().int().positive().optional(),
       tools: z
