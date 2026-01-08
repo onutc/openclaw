@@ -414,7 +414,7 @@ export function createTelegramBot(opts: TelegramBotOptions) {
                     `Pairing code: ${code}`,
                     "",
                     "Ask the bot owner to approve with:",
-                    "clawdbot telegram pairing approve <code>",
+                    "clawdbot pairing approve --provider telegram <code>",
                   ].join("\n"),
                 );
               }

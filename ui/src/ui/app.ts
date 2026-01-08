@@ -888,7 +888,9 @@ export class ClawdbotApp extends LitElement {
       this.eventLog = this.eventLogBuffer;
     }
     if (this.tab === "logs") {
+      this.logsAtBottom = true;
       await loadLogs(this, { reset: true });
+      this.scheduleLogsScroll(true);
     }
   }
 
@@ -999,10 +1001,20 @@ export class ClawdbotApp extends LitElement {
   async loadCron() {
     await Promise.all([loadCronStatus(this), loadCronJobs(this)]);
   }
-  async handleSendChat() {
+  async handleSendChat(
+    messageOverride?: string,
+    opts?: { restoreDraft?: boolean },
+  ) {
     if (!this.connected) return;
+    const previousDraft = this.chatMessage;
+    if (messageOverride != null) {
+      this.chatMessage = messageOverride;
+    }
     this.resetToolStream();
     const ok = await sendChat(this);
+    if (!ok && messageOverride != null) {
+      this.chatMessage = previousDraft;
+    }
     if (ok) {
       this.setLastActiveSessionKey(this.sessionKey);
     }
@@ -1013,6 +1025,9 @@ export class ClawdbotApp extends LitElement {
       this.chatStreamStartedAt = null;
       this.resetToolStream();
       void loadChatHistory(this);
+    }
+    if (ok && messageOverride != null && opts?.restoreDraft && previousDraft.trim()) {
+      this.chatMessage = previousDraft;
     }
     this.scheduleChatScroll();
   }

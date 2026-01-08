@@ -5,6 +5,7 @@ import {
   DEFAULT_GATEWAY_DAEMON_RUNTIME,
   isGatewayDaemonRuntime,
 } from "../commands/daemon-runtime.js";
+import { resolveControlUiLinks } from "../commands/onboard-helpers.js";
 import {
   createConfigIO,
   loadConfig,
@@ -13,6 +14,10 @@ import {
   resolveStateDir,
 } from "../config/config.js";
 import { resolveIsNixMode } from "../config/paths.js";
+import type {
+  BridgeBindMode,
+  GatewayControlUiConfig,
+} from "../config/types.js";
 import {
   GATEWAY_LAUNCH_AGENT_LABEL,
   GATEWAY_SYSTEMD_SERVICE_NAME,
@@ -47,10 +52,11 @@ type ConfigSummary = {
   exists: boolean;
   valid: boolean;
   issues?: Array<{ path: string; message: string }>;
+  controlUi?: GatewayControlUiConfig;
 };
 
 type GatewayStatusSummary = {
-  bindMode: string;
+  bindMode: BridgeBindMode;
   bindHost: string | null;
   port: number;
   portSource: "service args" | "env/config";
@@ -207,6 +213,7 @@ async function probeGatewayStatus(opts: {
   password?: string;
   timeoutMs: number;
   json?: boolean;
+  configPath?: string;
 }) {
   try {
     await withProgress(
@@ -224,6 +231,7 @@ async function probeGatewayStatus(opts: {
           timeoutMs: opts.timeoutMs,
           clientName: "cli",
           mode: "cli",
+          ...(opts.configPath ? { configPath: opts.configPath } : {}),
         }),
     );
     return { ok: true } as const;
@@ -369,6 +377,7 @@ async function gatherDaemonStatus(opts: {
     exists: cliSnapshot?.exists ?? false,
     valid: cliSnapshot?.valid ?? true,
     ...(cliSnapshot?.issues?.length ? { issues: cliSnapshot.issues } : {}),
+    controlUi: cliCfg.gateway?.controlUi,
   };
   const daemonConfigSummary: ConfigSummary = {
     path: daemonSnapshot?.path ?? daemonConfigPath,
@@ -377,6 +386,7 @@ async function gatherDaemonStatus(opts: {
     ...(daemonSnapshot?.issues?.length
       ? { issues: daemonSnapshot.issues }
       : {}),
+    controlUi: daemonCfg.gateway?.controlUi,
   };
   const configMismatch = cliConfigSummary.path !== daemonConfigSummary.path;
 
@@ -387,7 +397,11 @@ async function gatherDaemonStatus(opts: {
     ? "service args"
     : "env/config";
 
-  const bindMode = daemonCfg.gateway?.bind ?? "loopback";
+  const bindMode = (daemonCfg.gateway?.bind ?? "loopback") as
+    | "auto"
+    | "lan"
+    | "tailnet"
+    | "loopback";
   const bindHost = resolveGatewayBindHost(bindMode);
   const tailnetIPv4 = pickPrimaryTailnetIPv4();
   const probeHost = pickProbeHostForBind(bindMode, tailnetIPv4);
@@ -447,6 +461,7 @@ async function gatherDaemonStatus(opts: {
           daemonCfg.gateway?.auth?.password,
         timeoutMs,
         json: opts.rpc.json,
+        configPath: daemonConfigSummary.path,
       })
     : undefined;
   let lastError: string | undefined;
@@ -559,6 +574,17 @@ function printDaemonStatus(status: DaemonStatus, opts: { json: boolean }) {
       `Gateway: bind=${status.gateway.bindMode} (${bindHost}), port=${status.gateway.port} (${status.gateway.portSource})`,
     );
     defaultRuntime.log(`Probe target: ${status.gateway.probeUrl}`);
+    const controlUiEnabled = status.config?.daemon?.controlUi?.enabled ?? true;
+    if (!controlUiEnabled) {
+      defaultRuntime.log("Dashboard: disabled");
+    } else {
+      const links = resolveControlUiLinks({
+        port: status.gateway.port,
+        bind: status.gateway.bindMode,
+        basePath: status.config?.daemon?.controlUi?.basePath,
+      });
+      defaultRuntime.log(`Dashboard: ${links.httpUrl}`);
+    }
     if (status.gateway.probeNote) {
       defaultRuntime.log(`Probe note: ${status.gateway.probeNote}`);
     }
@@ -571,6 +597,16 @@ function printDaemonStatus(status: DaemonStatus, opts: { json: boolean }) {
   const runtimeLine = formatRuntimeStatus(service.runtime);
   if (runtimeLine) {
     defaultRuntime.log(`Runtime: ${runtimeLine}`);
+  }
+  if (
+    rpc &&
+    !rpc.ok &&
+    service.loaded &&
+    service.runtime?.status === "running"
+  ) {
+    defaultRuntime.log(
+      "Warm-up: launch agents can take a few seconds. Try again shortly.",
+    );
   }
   if (rpc) {
     if (rpc.ok) {
@@ -686,6 +722,8 @@ function printDaemonStatus(status: DaemonStatus, opts: { json: boolean }) {
       "If you need multiple gateways, isolate ports + config/state (see docs: /gateway#multiple-gateways-same-host).",
     );
   }
+  defaultRuntime.log("Troubles: run clawdbot status");
+  defaultRuntime.log("Troubleshooting: https://docs.clawd.bot/troubleshooting");
 }
 
 export async function runDaemonStatus(opts: DaemonStatusOptions) {

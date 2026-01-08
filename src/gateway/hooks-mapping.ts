@@ -28,6 +28,7 @@ export type HookMappingResolved = {
     | "imessage"
     | "msteams";
   to?: string;
+  model?: string;
   thinking?: string;
   timeoutSeconds?: number;
   transform?: HookMappingTransformResolved;
@@ -68,6 +69,7 @@ export type HookAction =
         | "imessage"
         | "msteams";
       to?: string;
+      model?: string;
       thinking?: string;
       timeoutSeconds?: number;
     };
@@ -112,6 +114,7 @@ type HookTransformResult = Partial<{
     | "signal"
     | "imessage";
   to: string;
+  model: string;
   thinking: string;
   timeoutSeconds: number;
 }> | null;
@@ -200,6 +203,7 @@ function normalizeHookMapping(
     deliver: mapping.deliver,
     provider: mapping.provider,
     to: mapping.to,
+    model: mapping.model,
     thinking: mapping.thinking,
     timeoutSeconds: mapping.timeoutSeconds,
     transform,
@@ -245,6 +249,7 @@ function buildActionFromMapping(
       deliver: mapping.deliver,
       provider: mapping.provider,
       to: renderOptional(mapping.to, ctx),
+      model: renderOptional(mapping.model, ctx),
       thinking: renderOptional(mapping.thinking, ctx),
       timeoutSeconds: mapping.timeoutSeconds,
     },
@@ -295,6 +300,7 @@ function mergeAction(
         : baseAgent?.deliver,
     provider: override.provider ?? baseAgent?.provider,
     to: override.to ?? baseAgent?.to,
+    model: override.model ?? baseAgent?.model,
     thinking: override.thinking ?? baseAgent?.thinking,
     timeoutSeconds: override.timeoutSeconds ?? baseAgent?.timeoutSeconds,
   });

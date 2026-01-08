@@ -3,7 +3,11 @@ import path from "node:path";
 
 import type { ClawdbotConfig } from "../config/config.js";
 import { resolveOAuthDir } from "../config/paths.js";
-import type { GroupPolicy, WhatsAppAccountConfig } from "../config/types.js";
+import type {
+  DmPolicy,
+  GroupPolicy,
+  WhatsAppAccountConfig,
+} from "../config/types.js";
 import { DEFAULT_ACCOUNT_ID } from "../routing/session-key.js";
 import { resolveUserPath } from "../utils.js";
 
@@ -17,6 +21,7 @@ export type ResolvedWhatsAppAccount = {
   allowFrom?: string[];
   groupAllowFrom?: string[];
   groupPolicy?: GroupPolicy;
+  dmPolicy?: DmPolicy;
   textChunkLimit?: number;
   groups?: WhatsAppAccountConfig["groups"];
 };
@@ -107,6 +112,7 @@ export function resolveWhatsAppAccount(params: {
     authDir,
     isLegacyAuthDir: isLegacy,
     selfChatMode: accountCfg?.selfChatMode ?? params.cfg.whatsapp?.selfChatMode,
+    dmPolicy: accountCfg?.dmPolicy ?? params.cfg.whatsapp?.dmPolicy,
     allowFrom: accountCfg?.allowFrom ?? params.cfg.whatsapp?.allowFrom,
     groupAllowFrom:
       accountCfg?.groupAllowFrom ?? params.cfg.whatsapp?.groupAllowFrom,

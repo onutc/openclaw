@@ -505,6 +505,7 @@ export async function startGatewayServer(
       | "imessage"
       | "msteams";
     to?: string;
+    model?: string;
     thinking?: string;
     timeoutSeconds?: number;
   }) => {
@@ -525,6 +526,7 @@ export async function startGatewayServer(
       payload: {
         kind: "agentTurn",
         message: value.message,
+        model: value.model,
         thinking: value.thinking,
         timeoutSeconds: value.timeoutSeconds,
         deliver: value.deliver,

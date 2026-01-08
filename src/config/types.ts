@@ -218,6 +218,8 @@ export type HookMappingConfig = {
     | "imessage"
     | "msteams";
   to?: string;
+  /** Override model for this hook (provider/model or alias). */
+  model?: string;
   thinking?: string;
   timeoutSeconds?: number;
   transform?: HookMappingTransform;
@@ -457,6 +459,8 @@ export type SlackChannelConfig = {
   allow?: boolean;
   /** Require mentioning the bot to trigger replies. */
   requireMention?: boolean;
+  /** Allow bot-authored messages to trigger replies (default: false). */
+  allowBots?: boolean;
   /** Allowlist of users that can invoke the bot in this channel. */
   users?: Array<string | number>;
   /** Optional skill filter for this channel. */
@@ -496,6 +500,8 @@ export type SlackAccountConfig = {
   enabled?: boolean;
   botToken?: string;
   appToken?: string;
+  /** Allow bot-authored messages to trigger replies (default: false). */
+  allowBots?: boolean;
   /**
    * Controls how channel messages are handled:
    * - "open" (default): channels bypass allowlists; mention-gating applies

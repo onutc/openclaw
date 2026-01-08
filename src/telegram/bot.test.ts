@@ -4,6 +4,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as replyModule from "../auto-reply/reply.js";
 import { createTelegramBot, getTelegramSequentialKey } from "./bot.js";
+import { resolveTelegramFetch } from "./fetch.js";
 
 const { loadWebMedia } = vi.hoisted(() => ({
   loadWebMedia: vi.fn(),
@@ -134,25 +135,52 @@ describe("createTelegramBot", () => {
     expect(useSpy).toHaveBeenCalledWith("throttler");
   });
 
-  it("forces native fetch for BAN compatibility", () => {
+  it("forces native fetch only under Bun", () => {
     const originalFetch = globalThis.fetch;
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
     const fetchSpy = vi.fn() as unknown as typeof fetch;
     globalThis.fetch = fetchSpy;
     try {
+      (globalThis as { Bun?: unknown }).Bun = {};
       createTelegramBot({ token: "tok" });
-      const isBun = "Bun" in globalThis || Boolean(process?.versions?.bun);
-      if (isBun) {
-        expect(botCtorSpy).toHaveBeenCalledWith(
-          "tok",
-          expect.objectContaining({
-            client: expect.objectContaining({ fetch: fetchSpy }),
-          }),
-        );
-      } else {
-        expect(botCtorSpy).toHaveBeenCalledWith("tok", undefined);
-      }
+      const fetchImpl = resolveTelegramFetch();
+      expect(fetchImpl).toBe(fetchSpy);
+      expect(botCtorSpy).toHaveBeenCalledWith(
+        "tok",
+        expect.objectContaining({
+          client: expect.objectContaining({ fetch: fetchSpy }),
+        }),
+      );
     } finally {
       globalThis.fetch = originalFetch;
+      if (originalBun === undefined) {
+        delete (globalThis as { Bun?: unknown }).Bun;
+      } else {
+        (globalThis as { Bun?: unknown }).Bun = originalBun;
+      }
+    }
+  });
+
+  it("does not force native fetch on Node", () => {
+    const originalFetch = globalThis.fetch;
+    const originalBun = (globalThis as { Bun?: unknown }).Bun;
+    const fetchSpy = vi.fn() as unknown as typeof fetch;
+    globalThis.fetch = fetchSpy;
+    try {
+      if (originalBun !== undefined) {
+        delete (globalThis as { Bun?: unknown }).Bun;
+      }
+      createTelegramBot({ token: "tok" });
+      const fetchImpl = resolveTelegramFetch();
+      expect(fetchImpl).toBeUndefined();
+      expect(botCtorSpy).toHaveBeenCalledWith("tok", undefined);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalBun === undefined) {
+        delete (globalThis as { Bun?: unknown }).Bun;
+      } else {
+        (globalThis as { Bun?: unknown }).Bun = originalBun;
+      }
     }
   });
 

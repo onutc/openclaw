@@ -116,6 +116,8 @@ Env var equivalent:
 Clawdbot stores **per-agent** auth profiles (OAuth + API keys) in:
 - `<agentDir>/auth-profiles.json` (default: `~/.clawdbot/agents/<agentId>/agent/auth-profiles.json`)
 
+See also: [/concepts/oauth](/concepts/oauth)
+
 Legacy OAuth imports:
 - `~/.clawdbot/credentials/oauth.json` (or `$CLAWDBOT_STATE_DIR/credentials/oauth.json`)
 
@@ -130,6 +132,10 @@ Overrides:
 - Agent dir (default agent root override): `CLAWDBOT_AGENT_DIR` (preferred), `PI_CODING_AGENT_DIR` (legacy)
 
 On first use, Clawdbot imports `oauth.json` entries into `auth-profiles.json`.
+
+Clawdbot also auto-syncs OAuth tokens from external CLIs into `auth-profiles.json` (when present on the gateway host):
+- `~/.claude/.credentials.json` (Claude Code) → `anthropic:claude-cli`
+- `~/.codex/auth.json` (Codex CLI) → `openai-codex:codex-cli`
 
 ### `auth`
 
@@ -733,15 +739,17 @@ Slack runs in Socket Mode and requires both a bot token and app token:
       groupChannels: ["G123"]
     },
     channels: {
-      C123: { allow: true, requireMention: true },
+      C123: { allow: true, requireMention: true, allowBots: false },
       "#general": {
         allow: true,
         requireMention: true,
+        allowBots: false,
         users: ["U123"],
         skills: ["docs"],
         systemPrompt: "Short answers only."
       }
     },
+    allowBots: false,
     reactionNotifications: "own", // off | own | all | allowlist
     reactionAllowlist: ["U123"],
     replyToMode: "off",           // off | first | all
@@ -767,6 +775,8 @@ Slack runs in Socket Mode and requires both a bot token and app token:
 Multi-account support lives under `slack.accounts` (see the multi-account section above). Env tokens only apply to the default account.
 
 Clawdbot starts Slack when the provider is enabled and both tokens are set (via config or `SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN`). Use `user:<id>` (DM) or `channel:<id>` when specifying delivery targets for cron/CLI commands.
+
+Bot-authored messages are ignored by default. Enable with `slack.allowBots` or `slack.channels.<id>.allowBots`.
 
 Reaction notification modes:
 - `off`: no reaction events.
@@ -1682,6 +1692,7 @@ Defaults:
           "From: {{messages[0].from}}\nSubject: {{messages[0].subject}}\n{{messages[0].snippet}}",
         deliver: true,
         provider: "last",
+        model: "openai/gpt-5.2-mini",
       },
     ],
   }
@@ -1695,7 +1706,7 @@ Requests must include the hook token:
 
 Endpoints:
 - `POST /hooks/wake` → `{ text, mode?: "now"|"next-heartbeat" }`
-- `POST /hooks/agent` → `{ message, name?, sessionKey?, wakeMode?, deliver?, provider?, to?, thinking?, timeoutSeconds? }`
+- `POST /hooks/agent` → `{ message, name?, sessionKey?, wakeMode?, deliver?, provider?, to?, model?, thinking?, timeoutSeconds? }`
 - `POST /hooks/<name>` → resolved via `hooks.mappings`
 
 `/hooks/agent` always posts a summary into the main session (and can optionally trigger an immediate heartbeat via `wakeMode: "now"`).
@@ -1707,6 +1718,7 @@ Mapping notes:
 - `transform` can point to a JS/TS module that returns a hook action.
 - `deliver: true` sends the final reply to a provider; `provider` defaults to `last` (falls back to WhatsApp).
 - If there is no prior delivery route, set `provider` + `to` explicitly (required for Telegram/Discord/Slack/Signal/iMessage).
+- `model` overrides the LLM for this hook run (`provider/model` or alias; must be allowed if `agent.models` is set).
 
 Gmail helper config (used by `clawdbot hooks gmail setup` / `run`):
 

@@ -140,7 +140,8 @@ async function noteTelegramTokenHelp(prompter: WizardPrompter): Promise<void> {
       "2) Run /newbot (or /mybots)",
       "3) Copy the token (looks like 123456:ABC...)",
       "Tip: you can also set TELEGRAM_BOT_TOKEN in your env.",
-      `Docs: ${formatDocsLink("/telegram", "telegram")}`,
+      `Docs: ${formatDocsLink("/telegram")}`,
+      "Website: https://clawd.bot",
     ].join("\n"),
     "Telegram bot token",
   );
@@ -469,16 +470,116 @@ async function maybeConfigureDmPolicies(params: {
   return cfg;
 }
 
+async function promptTelegramAllowFrom(params: {
+  cfg: ClawdbotConfig;
+  prompter: WizardPrompter;
+  accountId: string;
+}): Promise<ClawdbotConfig> {
+  const { cfg, prompter, accountId } = params;
+  const resolved = resolveTelegramAccount({ cfg, accountId });
+  const existingAllowFrom = resolved.config.allowFrom ?? [];
+  const entry = await prompter.text({
+    message: "Telegram allowFrom (user id)",
+    placeholder: "123456789",
+    initialValue: existingAllowFrom[0]
+      ? String(existingAllowFrom[0])
+      : undefined,
+    validate: (value) => {
+      const raw = String(value ?? "").trim();
+      if (!raw) return "Required";
+      if (!/^\d+$/.test(raw)) return "Use a numeric Telegram user id";
+      return undefined;
+    },
+  });
+  const normalized = String(entry).trim();
+  const merged = [
+    ...existingAllowFrom.map((item) => String(item).trim()).filter(Boolean),
+    normalized,
+  ];
+  const unique = [...new Set(merged)];
+
+  if (accountId === DEFAULT_ACCOUNT_ID) {
+    return {
+      ...cfg,
+      telegram: {
+        ...cfg.telegram,
+        enabled: true,
+        dmPolicy: "allowlist",
+        allowFrom: unique,
+      },
+    };
+  }
+
+  return {
+    ...cfg,
+    telegram: {
+      ...cfg.telegram,
+      enabled: true,
+      accounts: {
+        ...cfg.telegram?.accounts,
+        [accountId]: {
+          ...cfg.telegram?.accounts?.[accountId],
+          enabled: cfg.telegram?.accounts?.[accountId]?.enabled ?? true,
+          dmPolicy: "allowlist",
+          allowFrom: unique,
+        },
+      },
+    },
+  };
+}
+
 async function promptWhatsAppAllowFrom(
   cfg: ClawdbotConfig,
   _runtime: RuntimeEnv,
   prompter: WizardPrompter,
+  options?: { forceAllowlist?: boolean },
 ): Promise<ClawdbotConfig> {
   const existingPolicy = cfg.whatsapp?.dmPolicy ?? "pairing";
   const existingAllowFrom = cfg.whatsapp?.allowFrom ?? [];
   const existingLabel =
     existingAllowFrom.length > 0 ? existingAllowFrom.join(", ") : "unset";
   const existingResponsePrefix = cfg.messages?.responsePrefix;
+
+  if (options?.forceAllowlist) {
+    const entry = await prompter.text({
+      message: "Your WhatsApp number (E.164)",
+      placeholder: "+15555550123",
+      initialValue: existingAllowFrom[0],
+      validate: (value) => {
+        const raw = String(value ?? "").trim();
+        if (!raw) return "Required";
+        const normalized = normalizeE164(raw);
+        if (!normalized) return `Invalid number: ${raw}`;
+        return undefined;
+      },
+    });
+    const normalized = normalizeE164(String(entry).trim());
+    const merged = [
+      ...existingAllowFrom
+        .filter((item) => item !== "*")
+        .map((item) => normalizeE164(item))
+        .filter(Boolean),
+      normalized,
+    ];
+    const unique = [...new Set(merged.filter(Boolean))];
+    let next = setWhatsAppSelfChatMode(cfg, true);
+    next = setWhatsAppDmPolicy(next, "allowlist");
+    next = setWhatsAppAllowFrom(next, unique);
+    if (existingResponsePrefix === undefined) {
+      next = setMessagesResponsePrefix(next, "[clawdbot]");
+    }
+    await prompter.note(
+      [
+        "Allowlist mode enabled.",
+        `- allowFrom includes ${normalized}`,
+        existingResponsePrefix === undefined
+          ? "- responsePrefix set to [clawdbot]"
+          : "- responsePrefix left unchanged",
+      ].join("\n"),
+      "WhatsApp allowlist",
+    );
+    return next;
+  }
 
   await prompter.note(
     [
@@ -561,7 +662,7 @@ async function promptWhatsAppAllowFrom(
   }
   if (policy === "disabled") return next;
 
-  const options =
+  const allowOptions =
     existingAllowFrom.length > 0
       ? ([
           { value: "keep", label: "Keep current allowFrom" },
@@ -578,8 +679,11 @@ async function promptWhatsAppAllowFrom(
 
   const mode = (await prompter.select({
     message: "WhatsApp allowFrom (optional pre-allowlist)",
-    options: options.map((opt) => ({ value: opt.value, label: opt.label })),
-  })) as (typeof options)[number]["value"];
+    options: allowOptions.map((opt) => ({
+      value: opt.value,
+      label: opt.label,
+    })),
+  })) as (typeof allowOptions)[number]["value"];
 
   if (mode === "keep") {
     // Keep allowFrom as-is.
@@ -630,6 +734,11 @@ type SetupProvidersOptions = {
   whatsappAccountId?: string;
   promptWhatsAppAccountId?: boolean;
   onWhatsAppAccountId?: (accountId: string) => void;
+  forceAllowFromProviders?: ProviderChoice[];
+  skipDmPolicyPrompt?: boolean;
+  skipConfirm?: boolean;
+  quickstartDefaults?: boolean;
+  initialSelection?: ProviderChoice[];
 };
 
 export async function setupProviders(
@@ -638,6 +747,12 @@ export async function setupProviders(
   prompter: WizardPrompter,
   options?: SetupProvidersOptions,
 ): Promise<ClawdbotConfig> {
+  const forceAllowFromProviders = new Set(
+    options?.forceAllowFromProviders ?? [],
+  );
+  const forceTelegramAllowFrom = forceAllowFromProviders.has("telegram");
+  const forceWhatsAppAllowFrom = forceAllowFromProviders.has("whatsapp");
+
   let whatsappAccountId =
     options?.whatsappAccountId?.trim() || resolveDefaultWhatsAppAccountId(cfg);
   let whatsappLinked = await detectWhatsAppLinked(cfg, whatsappAccountId);
@@ -689,10 +804,12 @@ export async function setupProviders(
     "Provider status",
   );
 
-  const shouldConfigure = await prompter.confirm({
-    message: "Configure chat providers now?",
-    initialValue: true,
-  });
+  const shouldConfigure = options?.skipConfirm
+    ? true
+    : await prompter.confirm({
+        message: "Configure chat providers now?",
+        initialValue: true,
+      });
   if (!shouldConfigure) return cfg;
 
   await noteProviderPrimer(prompter);
@@ -745,9 +862,13 @@ export async function setupProviders(
     }
   });
 
+  const initialSelection =
+    options?.initialSelection ??
+    (options?.quickstartDefaults && !telegramConfigured ? ["telegram"] : []);
   const selection = (await prompter.multiselect({
     message: "Select providers",
     options: selectionOptions,
+    initialValues: initialSelection.length ? initialSelection : undefined,
   })) as ProviderChoice[];
 
   options?.onSelection?.(selection);
@@ -853,7 +974,9 @@ export async function setupProviders(
       );
     }
 
-    next = await promptWhatsAppAllowFrom(next, runtime, prompter);
+    next = await promptWhatsAppAllowFrom(next, runtime, prompter, {
+      forceAllowlist: forceWhatsAppAllowFrom,
+    });
   }
 
   if (selection.includes("telegram")) {
@@ -960,6 +1083,14 @@ export async function setupProviders(
           },
         };
       }
+    }
+
+    if (forceTelegramAllowFrom) {
+      next = await promptTelegramAllowFrom({
+        cfg: next,
+        prompter,
+        accountId: telegramAccountId,
+      });
     }
   }
 
@@ -1413,7 +1544,9 @@ export async function setupProviders(
     );
   }
 
-  next = await maybeConfigureDmPolicies({ cfg: next, selection, prompter });
+  if (!options?.skipDmPolicyPrompt) {
+    next = await maybeConfigureDmPolicies({ cfg: next, selection, prompter });
+  }
 
   if (options?.allowDisable) {
     if (!selection.includes("telegram") && telegramConfigured) {
