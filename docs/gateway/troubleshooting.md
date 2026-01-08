@@ -9,6 +9,47 @@ When your CLAWDBOT misbehaves, here's how to fix it.
 
 ## Common Issues
 
+### Service Installed but Nothing is Running
+
+If the gateway service is installed but the process exits immediately, the daemon
+can appear “loaded” while nothing is running.
+
+**Check:**
+```bash
+clawdbot daemon status
+clawdbot doctor
+```
+
+Doctor/daemon will show runtime state (PID/last exit) and log hints.
+
+**Logs:**
+- Preferred: `clawdbot logs --follow`
+- File logs (always): `/tmp/clawdbot/clawdbot-YYYY-MM-DD.log` (or your configured `logging.file`)
+- macOS LaunchAgent (if installed): `~/.clawdbot/logs/gateway.log` and `gateway.err.log`
+- Linux systemd (if installed): `journalctl --user -u clawdbot-gateway.service -n 200 --no-pager`
+- Windows: `schtasks /Query /TN "Clawdbot Gateway" /V /FO LIST`
+
+### Address Already in Use (Port 18789)
+
+This means something is already listening on the gateway port.
+
+**Check:**
+```bash
+clawdbot daemon status
+```
+
+It will show the listener(s) and likely causes (gateway already running, SSH tunnel).
+If needed, stop the service or pick a different port.
+
+### Legacy Workspace Folders Detected
+
+If you upgraded from older installs, you might still have `~/clawdis` or
+`~/clawdbot` on disk. Multiple workspace directories can cause confusing auth
+or state drift because only one workspace is active.
+
+**Fix:** keep a single active workspace and archive/remove the rest. See
+[Agent workspace](/concepts/agent-workspace#legacy-workspace-folders).
+
 ### "Agent was aborted"
 
 The agent was interrupted mid-response.
@@ -35,6 +76,8 @@ cat ~/.clawdbot/clawdbot.json | jq '.routing.groupChat, .whatsapp.groups, .teleg
 
 **Check 3:** Check the logs
 ```bash
+clawdbot logs --follow
+# or if you want quick filters:
 tail -f "$(ls -t /tmp/clawdbot/clawdbot-*.log | head -1)" | grep "blocked\\|skip\\|unauthorized"
 ```
 
@@ -87,7 +130,7 @@ clawdbot status
 clawdbot status --deep
 
 # View recent connection events
-tail -100 /tmp/clawdbot/clawdbot-*.log | grep "connection\\|disconnect\\|logout"
+clawdbot logs --limit 200 | grep "connection\\|disconnect\\|logout"
 ```
 
 **Fix:** Usually reconnects automatically once the Gateway is running. If you’re stuck, restart the Gateway process (however you supervise it), or run it manually with verbose output:
@@ -99,9 +142,9 @@ clawdbot gateway --verbose
 If you’re logged out / unlinked:
 
 ```bash
-clawdbot logout
+clawdbot providers logout
 trash ~/.clawdbot/credentials # if logout can't cleanly remove everything
-clawdbot login --verbose       # re-scan QR
+clawdbot providers login --verbose       # re-scan QR
 ```
 
 ### Media Send Failing
@@ -163,7 +206,7 @@ kill -9 <PID>
 If the gateway is supervised by launchd, killing the PID will just respawn it.
 Stop the supervisor instead:
 ```bash
-clawdbot gateway stop
+clawdbot daemon stop
 # Or: launchctl bootout gui/$UID/com.clawdbot.gateway
 ```
 
@@ -180,7 +223,7 @@ Get verbose logging:
 #
 # Then run verbose commands to mirror debug output to stdout:
 clawdbot gateway --verbose
-clawdbot login --verbose
+clawdbot providers login --verbose
 ```
 
 ## Log Locations
@@ -211,7 +254,7 @@ Nuclear option:
 
 ```bash
 trash ~/.clawdbot
-clawdbot login         # re-pair WhatsApp
+clawdbot providers login         # re-pair WhatsApp
 clawdbot gateway        # start the Gateway again
 ```
 

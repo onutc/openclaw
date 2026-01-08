@@ -30,6 +30,7 @@ export type TypingSignaler = {
   signalRunStart: () => Promise<void>;
   signalTextDelta: (text?: string) => Promise<void>;
   signalReasoningDelta: () => Promise<void>;
+  signalToolStart: () => Promise<void>;
 };
 
 export function createTypingSignaler(params: {
@@ -65,6 +66,13 @@ export function createTypingSignaler(params: {
     typing.refreshTypingTtl();
   };
 
+  const signalToolStart = async () => {
+    if (disabled) return;
+    if (!typing.isActive()) return;
+    // Keep typing indicator alive during tool execution without changing mode semantics.
+    typing.refreshTypingTtl();
+  };
+
   return {
     mode,
     shouldStartImmediately,
@@ -73,5 +81,6 @@ export function createTypingSignaler(params: {
     signalRunStart,
     signalTextDelta,
     signalReasoningDelta,
+    signalToolStart,
   };
 }

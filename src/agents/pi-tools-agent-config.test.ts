@@ -233,7 +233,7 @@ describe("Agent-specific tool filtering", () => {
     expect(bash).toBeDefined();
 
     const result = await bash?.execute("call1", {
-      command: "node -e \"setTimeout(() => { console.log('done') }, 50)\"",
+      command: "echo done",
       yieldMs: 10,
     });
 

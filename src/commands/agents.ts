@@ -322,17 +322,18 @@ function buildProviderBindings(params: {
   agentId: string;
   selection: ProviderChoice[];
   config: ClawdbotConfig;
-  whatsappAccountId?: string;
+  accountIds?: Partial<Record<ProviderChoice, string>>;
 }): AgentBinding[] {
   const bindings: AgentBinding[] = [];
   const agentId = normalizeAgentId(params.agentId);
   for (const provider of params.selection) {
     const match: AgentBinding["match"] = { provider };
-    if (provider === "whatsapp") {
-      const accountId =
-        params.whatsappAccountId?.trim() ||
-        resolveDefaultWhatsAppAccountId(params.config);
-      match.accountId = accountId || DEFAULT_ACCOUNT_ID;
+    const accountId = params.accountIds?.[provider]?.trim();
+    if (accountId) {
+      match.accountId = accountId;
+    } else if (provider === "whatsapp") {
+      const defaultId = resolveDefaultWhatsAppAccountId(params.config);
+      match.accountId = defaultId || DEFAULT_ACCOUNT_ID;
     }
     bindings.push({ agentId, match });
   }
@@ -342,12 +343,22 @@ function buildProviderBindings(params: {
 export async function agentsAddCommand(
   opts: AgentsAddOptions,
   runtime: RuntimeEnv = defaultRuntime,
+  params?: { hasFlags?: boolean },
 ) {
   const cfg = await requireValidConfig(runtime);
   if (!cfg) return;
 
   const workspaceFlag = opts.workspace?.trim();
   const nameInput = opts.name?.trim();
+  const hasFlags = params?.hasFlags === true;
+
+  if (hasFlags && !workspaceFlag) {
+    runtime.error(
+      "Non-interactive mode requires --workspace. Re-run without flags to use the wizard.",
+    );
+    runtime.exit(1);
+    return;
+  }
 
   if (workspaceFlag) {
     if (!nameInput) {
@@ -493,15 +504,15 @@ export async function agentsAddCommand(
     });
 
     let selection: ProviderChoice[] = [];
-    let whatsappAccountId: string | undefined;
+    const providerAccountIds: Partial<Record<ProviderChoice, string>> = {};
     nextConfig = await setupProviders(nextConfig, runtime, prompter, {
       allowSignalInstall: true,
       onSelection: (value) => {
         selection = value;
       },
-      promptWhatsAppAccountId: true,
-      onWhatsAppAccountId: (value) => {
-        whatsappAccountId = value;
+      promptAccountIds: true,
+      onAccountId: (provider, accountId) => {
+        providerAccountIds[provider] = accountId;
       },
     });
 
@@ -516,7 +527,7 @@ export async function agentsAddCommand(
           agentId,
           selection,
           config: nextConfig,
-          whatsappAccountId,
+          accountIds: providerAccountIds,
         });
         const result = applyAgentBindings(nextConfig, desiredBindings);
         nextConfig = result.config;

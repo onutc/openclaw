@@ -7,11 +7,33 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-config-"));
   const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousHomeDrive = process.env.HOMEDRIVE;
+  const previousHomePath = process.env.HOMEPATH;
   process.env.HOME = base;
+  process.env.USERPROFILE = base;
+  if (process.platform === "win32") {
+    const parsed = path.parse(base);
+    process.env.HOMEDRIVE = parsed.root.replace(/\\$/, "");
+    process.env.HOMEPATH = base.slice(Math.max(parsed.root.length - 1, 0));
+  }
   try {
     return await fn(base);
   } finally {
     process.env.HOME = previousHome;
+    process.env.USERPROFILE = previousUserProfile;
+    if (process.platform === "win32") {
+      if (previousHomeDrive === undefined) {
+        delete process.env.HOMEDRIVE;
+      } else {
+        process.env.HOMEDRIVE = previousHomeDrive;
+      }
+      if (previousHomePath === undefined) {
+        delete process.env.HOMEPATH;
+      } else {
+        process.env.HOMEPATH = previousHomePath;
+      }
+    }
     await fs.rm(base, { recursive: true, force: true });
   }
 }
@@ -190,7 +212,11 @@ describe("config identity defaults", () => {
             routing: {},
             whatsapp: { allowFrom: ["+15555550123"], textChunkLimit: 4444 },
             telegram: { enabled: true, textChunkLimit: 3333 },
-            discord: { enabled: true, textChunkLimit: 1999 },
+            discord: {
+              enabled: true,
+              textChunkLimit: 1999,
+              maxLinesPerMessage: 17,
+            },
             signal: { enabled: true, textChunkLimit: 2222 },
             imessage: { enabled: true, textChunkLimit: 1111 },
           },
@@ -207,6 +233,7 @@ describe("config identity defaults", () => {
       expect(cfg.whatsapp?.textChunkLimit).toBe(4444);
       expect(cfg.telegram?.textChunkLimit).toBe(3333);
       expect(cfg.discord?.textChunkLimit).toBe(1999);
+      expect(cfg.discord?.maxLinesPerMessage).toBe(17);
       expect(cfg.signal?.textChunkLimit).toBe(2222);
       expect(cfg.imessage?.textChunkLimit).toBe(1111);
 
@@ -439,7 +466,7 @@ describe("Nix integration (U3, U5, U9)", () => {
         { CLAWDBOT_STATE_DIR: "/custom/state/dir" },
         async () => {
           const { STATE_DIR_CLAWDBOT } = await import("./config.js");
-          expect(STATE_DIR_CLAWDBOT).toBe("/custom/state/dir");
+          expect(STATE_DIR_CLAWDBOT).toBe(path.resolve("/custom/state/dir"));
         },
       );
     });
@@ -449,7 +476,9 @@ describe("Nix integration (U3, U5, U9)", () => {
         { CLAWDBOT_CONFIG_PATH: undefined, CLAWDBOT_STATE_DIR: undefined },
         async () => {
           const { CONFIG_PATH_CLAWDBOT } = await import("./config.js");
-          expect(CONFIG_PATH_CLAWDBOT).toMatch(/\.clawdbot\/clawdbot\.json$/);
+          expect(CONFIG_PATH_CLAWDBOT).toMatch(
+            /\.clawdbot[\\/]clawdbot\.json$/,
+          );
         },
       );
     });
@@ -472,7 +501,9 @@ describe("Nix integration (U3, U5, U9)", () => {
         },
         async () => {
           const { CONFIG_PATH_CLAWDBOT } = await import("./config.js");
-          expect(CONFIG_PATH_CLAWDBOT).toBe("/custom/state/clawdbot.json");
+          expect(CONFIG_PATH_CLAWDBOT).toBe(
+            path.join(path.resolve("/custom/state"), "clawdbot.json"),
+          );
         },
       );
     });

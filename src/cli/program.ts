@@ -1,4 +1,3 @@
-import chalk from "chalk";
 import { Command } from "commander";
 import { agentCliCommand } from "../commands/agent-via-gateway.js";
 import {
@@ -15,7 +14,6 @@ import { sendCommand } from "../commands/send.js";
 import { sessionsCommand } from "../commands/sessions.js";
 import { setupCommand } from "../commands/setup.js";
 import { statusCommand } from "../commands/status.js";
-import { updateCommand } from "../commands/update.js";
 import {
   isNixMode,
   loadConfig,
@@ -25,12 +23,12 @@ import {
 } from "../config/config.js";
 import { danger, setVerbose } from "../globals.js";
 import { autoMigrateLegacyState } from "../infra/state-migrations.js";
-import { loginWeb, logoutWeb } from "../provider-web.js";
 import { defaultRuntime } from "../runtime.js";
+import { isRich, theme } from "../terminal/theme.js";
 import { VERSION } from "../version.js";
-import { resolveWhatsAppAccount } from "../web/accounts.js";
+import { emitCliBanner, formatCliBannerLine } from "./banner.js";
 import { registerBrowserCli } from "./browser-cli.js";
-import { registerCanvasCli } from "./canvas-cli.js";
+import { hasExplicitOptions } from "./command-options.js";
 import { registerCronCli } from "./cron-cli.js";
 import { registerDaemonCli } from "./daemon-cli.js";
 import { createDefaultDeps } from "./deps.js";
@@ -38,11 +36,14 @@ import { registerDnsCli } from "./dns-cli.js";
 import { registerDocsCli } from "./docs-cli.js";
 import { registerGatewayCli } from "./gateway-cli.js";
 import { registerHooksCli } from "./hooks-cli.js";
+import { registerLogsCli } from "./logs-cli.js";
 import { registerModelsCli } from "./models-cli.js";
 import { registerNodesCli } from "./nodes-cli.js";
 import { registerPairingCli } from "./pairing-cli.js";
 import { forceFreePort } from "./ports.js";
-import { registerTelegramCli } from "./telegram-cli.js";
+import { runProviderLogin, runProviderLogout } from "./provider-auth.js";
+import { registerProvidersCli } from "./providers-cli.js";
+import { registerSkillsCli } from "./skills-cli.js";
 import { registerTuiCli } from "./tui-cli.js";
 
 export { forceFreePort };
@@ -50,8 +51,6 @@ export { forceFreePort };
 export function buildProgram() {
   const program = new Command();
   const PROGRAM_VERSION = VERSION;
-  const TAGLINE =
-    "Send, receive, and auto-reply on WhatsApp (web) and Telegram (bot).";
 
   program
     .name("clawdbot")
@@ -66,28 +65,21 @@ export function buildProgram() {
       "Use a named profile (isolates CLAWDBOT_STATE_DIR/CLAWDBOT_CONFIG_PATH under ~/.clawdbot-<name>)",
     );
 
-  const formatIntroLine = (version: string, rich = true) => {
-    const base = `📡 clawdbot ${version} — ${TAGLINE}`;
-    return rich && chalk.level > 0
-      ? `${chalk.bold.cyan("📡 clawdbot")} ${chalk.white(version)} ${chalk.gray("—")} ${chalk.green(TAGLINE)}`
-      : base;
-  };
-
   program.configureHelp({
-    optionTerm: (option) => chalk.yellow(option.flags),
-    subcommandTerm: (cmd) => chalk.green(cmd.name()),
+    optionTerm: (option) => theme.option(option.flags),
+    subcommandTerm: (cmd) => theme.command(cmd.name()),
   });
 
   program.configureOutput({
     writeOut: (str) => {
       const colored = str
-        .replace(/^Usage:/gm, chalk.bold.cyan("Usage:"))
-        .replace(/^Options:/gm, chalk.bold.cyan("Options:"))
-        .replace(/^Commands:/gm, chalk.bold.cyan("Commands:"));
+        .replace(/^Usage:/gm, theme.heading("Usage:"))
+        .replace(/^Options:/gm, theme.heading("Options:"))
+        .replace(/^Commands:/gm, theme.heading("Commands:"));
       process.stdout.write(colored);
     },
     writeErr: (str) => process.stderr.write(str),
-    outputError: (str, write) => write(chalk.red(str)),
+    outputError: (str, write) => write(theme.error(str)),
   });
 
   if (
@@ -99,9 +91,13 @@ export function buildProgram() {
     process.exit(0);
   }
 
-  program.addHelpText("beforeAll", `\n${formatIntroLine(PROGRAM_VERSION)}\n`);
+  program.addHelpText("beforeAll", () => {
+    const line = formatCliBannerLine(PROGRAM_VERSION, { richTty: isRich() });
+    return `\n${line}\n`;
+  });
 
   program.hook("preAction", async (_thisCommand, actionCommand) => {
+    emitCliBanner(PROGRAM_VERSION);
     if (actionCommand.name() === "doctor") return;
     const snapshot = await readConfigFileSnapshot();
     if (snapshot.legacyIssues.length === 0) return;
@@ -142,7 +138,7 @@ export function buildProgram() {
   });
   const examples = [
     [
-      "clawdbot login --verbose",
+      "clawdbot providers login --verbose",
       "Link personal WhatsApp Web and show QR + connection logs.",
     ],
     [
@@ -170,12 +166,12 @@ export function buildProgram() {
   ] as const;
 
   const fmtExamples = examples
-    .map(([cmd, desc]) => `  ${chalk.green(cmd)}\n    ${chalk.gray(desc)}`)
+    .map(([cmd, desc]) => `  ${theme.command(cmd)}\n    ${theme.muted(desc)}`)
     .join("\n");
 
   program.addHelpText(
     "afterAll",
-    `\n${chalk.bold.cyan("Examples:")}\n${fmtExamples}\n`,
+    `\n${theme.heading("Examples:")}\n${fmtExamples}\n`,
   );
 
   program
@@ -190,9 +186,16 @@ export function buildProgram() {
     .option("--mode <mode>", "Wizard mode: local|remote")
     .option("--remote-url <url>", "Remote Gateway WebSocket URL")
     .option("--remote-token <token>", "Remote Gateway token (optional)")
-    .action(async (opts) => {
+    .action(async (opts, command) => {
       try {
-        if (opts.wizard) {
+        const hasWizardFlags = hasExplicitOptions(command, [
+          "wizard",
+          "nonInteractive",
+          "mode",
+          "remoteUrl",
+          "remoteToken",
+        ]);
+        if (opts.wizard || hasWizardFlags) {
           await onboardCommand(
             {
               workspace: opts.workspace as string | undefined,
@@ -339,34 +342,22 @@ export function buildProgram() {
       }
     });
 
+  // Deprecated hidden aliases: use `clawdbot providers login/logout`. Remove in a future major.
   program
-    .command("update")
-    .description("Audit and modernize the local configuration")
-    .action(async () => {
-      try {
-        await updateCommand(defaultRuntime);
-      } catch (err) {
-        defaultRuntime.error(String(err));
-        defaultRuntime.exit(1);
-      }
-    });
-
-  program
-    .command("login")
+    .command("login", { hidden: true })
     .description("Link your personal WhatsApp via QR (web provider)")
     .option("--verbose", "Verbose connection logs", false)
     .option("--provider <provider>", "Provider alias (default: whatsapp)")
     .option("--account <id>", "WhatsApp account id (accountId)")
     .action(async (opts) => {
-      setVerbose(Boolean(opts.verbose));
       try {
-        const provider = opts.provider ?? "whatsapp";
-        await loginWeb(
-          Boolean(opts.verbose),
-          provider,
-          undefined,
+        await runProviderLogin(
+          {
+            provider: opts.provider as string | undefined,
+            account: opts.account as string | undefined,
+            verbose: Boolean(opts.verbose),
+          },
           defaultRuntime,
-          opts.account as string | undefined,
         );
       } catch (err) {
         defaultRuntime.error(danger(`Web login failed: ${String(err)}`));
@@ -375,23 +366,19 @@ export function buildProgram() {
     });
 
   program
-    .command("logout")
-    .description("Clear cached WhatsApp Web credentials")
+    .command("logout", { hidden: true })
+    .description("Log out of WhatsApp Web (keeps config)")
     .option("--provider <provider>", "Provider alias (default: whatsapp)")
     .option("--account <id>", "WhatsApp account id (accountId)")
     .action(async (opts) => {
       try {
-        void opts.provider; // placeholder for future multi-provider; currently web only.
-        const cfg = loadConfig();
-        const account = resolveWhatsAppAccount({
-          cfg,
-          accountId: opts.account as string | undefined,
-        });
-        await logoutWeb({
-          runtime: defaultRuntime,
-          authDir: account.authDir,
-          isLegacyAuthDir: account.isLegacyAuthDir,
-        });
+        await runProviderLogout(
+          {
+            provider: opts.provider as string | undefined,
+            account: opts.account as string | undefined,
+          },
+          defaultRuntime,
+        );
       } catch (err) {
         defaultRuntime.error(danger(`Logout failed: ${String(err)}`));
         defaultRuntime.exit(1);
@@ -580,8 +567,9 @@ Examples:
     .description("Add a new isolated agent")
     .option("--workspace <dir>", "Workspace directory for the new agent")
     .option("--json", "Output JSON summary", false)
-    .action(async (name, opts) => {
+    .action(async (name, opts, command) => {
       try {
+        const hasFlags = hasExplicitOptions(command, ["workspace", "json"]);
         await agentsAddCommand(
           {
             name: typeof name === "string" ? name : undefined,
@@ -589,6 +577,7 @@ Examples:
             json: Boolean(opts.json),
           },
           defaultRuntime,
+          { hasFlags },
         );
       } catch (err) {
         defaultRuntime.error(String(err));
@@ -626,9 +615,9 @@ Examples:
     }
   });
 
-  registerCanvasCli(program);
   registerDaemonCli(program);
   registerGatewayCli(program);
+  registerLogsCli(program);
   registerModelsCli(program);
   registerNodesCli(program);
   registerTuiCli(program);
@@ -637,7 +626,8 @@ Examples:
   registerDocsCli(program);
   registerHooksCli(program);
   registerPairingCli(program);
-  registerTelegramCli(program);
+  registerProvidersCli(program);
+  registerSkillsCli(program);
 
   program
     .command("status")
@@ -651,6 +641,7 @@ Examples:
     )
     .option("--timeout <ms>", "Probe timeout in milliseconds", "10000")
     .option("--verbose", "Verbose logging", false)
+    .option("--debug", "Alias for --verbose", false)
     .addHelpText(
       "after",
       `
@@ -659,10 +650,12 @@ Examples:
   clawdbot status --json            # machine-readable output
   clawdbot status --usage           # show provider usage/quota snapshots
   clawdbot status --deep            # run provider probes (WA + Telegram + Discord + Slack + Signal)
-  clawdbot status --deep --timeout 5000 # tighten probe timeout`,
+  clawdbot status --deep --timeout 5000 # tighten probe timeout
+  clawdbot providers status         # gateway provider runtime + probes`,
     )
     .action(async (opts) => {
-      setVerbose(Boolean(opts.verbose));
+      const verbose = Boolean(opts.verbose || opts.debug);
+      setVerbose(verbose);
       const timeout = opts.timeout
         ? Number.parseInt(String(opts.timeout), 10)
         : undefined;
@@ -680,6 +673,7 @@ Examples:
             deep: Boolean(opts.deep),
             usage: Boolean(opts.usage),
             timeoutMs: timeout,
+            verbose,
           },
           defaultRuntime,
         );
@@ -695,8 +689,10 @@ Examples:
     .option("--json", "Output JSON instead of text", false)
     .option("--timeout <ms>", "Connection timeout in milliseconds", "10000")
     .option("--verbose", "Verbose logging", false)
+    .option("--debug", "Alias for --verbose", false)
     .action(async (opts) => {
-      setVerbose(Boolean(opts.verbose));
+      const verbose = Boolean(opts.verbose || opts.debug);
+      setVerbose(verbose);
       const timeout = opts.timeout
         ? Number.parseInt(String(opts.timeout), 10)
         : undefined;
@@ -712,6 +708,7 @@ Examples:
           {
             json: Boolean(opts.json),
             timeoutMs: timeout,
+            verbose,
           },
           defaultRuntime,
         );

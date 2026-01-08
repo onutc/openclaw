@@ -43,13 +43,13 @@ WhatsApp requires a real mobile number for verification. VoIP and virtual number
 - Result: unreliable delivery and frequent blocks, so support was removed.
 
 ## Login + credentials
-- Login command: `clawdbot login` (QR via Linked Devices).
-- Multi-account login: `clawdbot login --account <id>` (`<id>` = `accountId`).
+- Login command: `clawdbot providers login` (QR via Linked Devices).
+- Multi-account login: `clawdbot providers login --account <id>` (`<id>` = `accountId`).
 - Default account (when `--account` is omitted): `default` if present, otherwise the first configured account id (sorted).
 - Credentials stored in `~/.clawdbot/credentials/whatsapp/<accountId>/creds.json`.
 - Backup copy at `creds.json.bak` (restored on corruption).
 - Legacy compatibility: older installs stored Baileys files directly in `~/.clawdbot/credentials/`.
-- Logout: `clawdbot logout` (or `--account <id>`) deletes WhatsApp auth state (but keeps shared `oauth.json`).
+- Logout: `clawdbot providers logout` (or `--account <id>`) deletes WhatsApp auth state (but keeps shared `oauth.json`).
 - Logged-out socket => error instructs re-link.
 
 ## Inbound flow (DM + group)
@@ -126,9 +126,13 @@ Recommended for personal numbers:
 - Reaction removal semantics: see [/tools/reactions](/tools/reactions).
 - Tool gating: `whatsapp.actions.reactions` (default: enabled).
 
+## Limits
+- Outbound text is chunked to `whatsapp.textChunkLimit` (default 4000).
+- Media items are capped by `agent.mediaMaxMb` (default 5 MB).
+
 ## Outbound send (text + media)
 - Uses active web listener; error if gateway not running.
-- Text chunking: 4k max per message.
+- Text chunking: 4k max per message (configurable via `whatsapp.textChunkLimit`).
 - Media:
   - Image/video/audio/document supported.
   - Audio sent as PTT; `audio/ogg` => `audio/ogg; codecs=opus`.

@@ -99,7 +99,7 @@ https://github.com/oven-sh/bun/issues/5951
 ### WhatsApp (QR login)
 
 ```bash
-pnpm clawdbot login
+pnpm clawdbot providers login
 ```
 
 Scan via WhatsApp → Settings → Linked Devices.
@@ -138,6 +138,9 @@ pnpm clawdbot send --to +15555550123 --message "Hello from Clawdbot"
 ```
 
 If `health` shows “no auth configured”, go back to the wizard and set OAuth/key auth — the agent won’t be able to respond without it.
+
+Local probe tip: `pnpm clawdbot status --deep` runs provider checks without needing a gateway connection.
+Gateway snapshot: `pnpm clawdbot providers status` shows what the gateway reports (use `status --deep` for local-only probes).
 
 ## Next steps (optional, but great)
 

@@ -100,7 +100,7 @@ Notes:
 - Uses gateway `node.invoke` under the hood.
 - If no `node` is provided, the tool picks a default (single connected node or local mac node).
 - A2UI is v0.8 only (no `createSurface`); the CLI rejects v0.9 JSONL with line errors.
-- Quick smoke: `clawdbot canvas a2ui push --text "Hello from A2UI"`.
+- Quick smoke: `clawdbot nodes canvas a2ui push --node <id> --text "Hello from A2UI"`.
 
 ### `nodes`
 Discover and target paired nodes; send notifications; capture camera/screen.
@@ -162,7 +162,7 @@ Notes:
 Restart or apply updates to the running Gateway process (in-place).
 
 Core actions:
-- `restart` (sends `SIGUSR1` to the current process; `clawdbot gateway`/`gateway-daemon` restart in-place)
+- `restart` (sends `SIGUSR1` to the current process; `clawdbot gateway` restart in-place)
 - `config.get` / `config.schema`
 - `config.apply` (validate + write config + restart + wake)
 - `update.run` (run update + restart + wake)
@@ -177,7 +177,7 @@ Core parameters:
 - `sessions_list`: `kinds?`, `limit?`, `activeMinutes?`, `messageLimit?` (0 = none)
 - `sessions_history`: `sessionKey`, `limit?`, `includeTools?`
 - `sessions_send`: `sessionKey`, `message`, `timeoutSeconds?` (0 = fire-and-forget)
-- `sessions_spawn`: `task`, `label?`, `model?`, `runTimeoutSeconds?`, `cleanup?`
+- `sessions_spawn`: `task`, `label?`, `agentId?`, `model?`, `runTimeoutSeconds?`, `cleanup?`
 
 Notes:
 - `main` is the canonical direct-chat key; global/unknown are hidden.
@@ -241,9 +241,10 @@ Notes:
 - The tool is only exposed when the current provider is WhatsApp.
 
 ### `telegram`
-Send Telegram reactions.
+Send Telegram messages or reactions.
 
 Core actions:
+- `sendMessage` (`to`, `content`, optional `mediaUrl`, `replyToMessageId`, `messageThreadId`)
 - `react` (`chatId`, `messageId`, `emoji`, optional `remove`)
 
 Notes:

@@ -1,4 +1,5 @@
 import type { CliDeps } from "../cli/deps.js";
+import { withProgress } from "../cli/progress.js";
 import { loadConfig } from "../config/config.js";
 import { callGateway, randomIdempotencyKey } from "../gateway/call.js";
 import { success } from "../globals.js";
@@ -52,27 +53,36 @@ export async function sendCommand(
       throw resolvedTarget.error;
     }
     const cfg = loadConfig();
-    const sendMSTeamsAdapter = async (
-      to: string,
-      text: string,
-      o?: { mediaUrl?: string },
-    ) => deps.sendMessageMSTeams({ cfg, to, text, mediaUrl: o?.mediaUrl });
-
-    const results = await deliverOutboundPayloads({
-      cfg,
-      provider,
-      to: resolvedTarget.to,
-      payloads: [{ text: opts.message, mediaUrl: opts.media }],
-      deps: {
-        sendWhatsApp: deps.sendMessageWhatsApp,
-        sendTelegram: deps.sendMessageTelegram,
-        sendDiscord: deps.sendMessageDiscord,
-        sendSlack: deps.sendMessageSlack,
-        sendSignal: deps.sendMessageSignal,
-        sendIMessage: deps.sendMessageIMessage,
-        sendMSTeams: sendMSTeamsAdapter,
+    const results = await withProgress(
+      {
+        label: `Sending via ${provider}…`,
+        indeterminate: true,
+        enabled: opts.json !== true,
       },
-    });
+      async () =>
+        await deliverOutboundPayloads({
+          cfg,
+          provider,
+          to: resolvedTarget.to,
+          accountId: opts.account,
+          payloads: [{ text: opts.message, mediaUrl: opts.media }],
+          deps: {
+            sendWhatsApp: deps.sendMessageWhatsApp,
+            sendTelegram: deps.sendMessageTelegram,
+            sendDiscord: deps.sendMessageDiscord,
+            sendSlack: deps.sendMessageSlack,
+            sendSignal: deps.sendMessageSignal,
+            sendIMessage: deps.sendMessageIMessage,
+            sendMSTeams: async (to, text, o) =>
+              deps.sendMessageMSTeams({
+                cfg,
+                to,
+                text,
+                mediaUrl: o?.mediaUrl,
+              }),
+          },
+        }),
+    );
     const last = results.at(-1);
     const summary = formatOutboundDeliverySummary(provider, last);
     runtime.log(success(summary));
@@ -114,7 +124,14 @@ export async function sendCommand(
       mode: "cli",
     });
 
-  const result = await sendViaGateway();
+  const result = await withProgress(
+    {
+      label: `Sending via ${provider}…`,
+      indeterminate: true,
+      enabled: opts.json !== true,
+    },
+    async () => await sendViaGateway(),
+  );
 
   runtime.log(
     success(

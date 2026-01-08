@@ -23,6 +23,8 @@ launchctl kickstart -k gui/$UID/com.clawdbot.gateway
 launchctl bootout gui/$UID/com.clawdbot.gateway
 ```
 
+`launchctl` only works if the LaunchAgent is installed; otherwise run `clawdbot daemon install` first.
+
 Details: [Gateway runbook](/gateway) and [Bundled bun Gateway](/platforms/mac/bun).
 
 ## Purpose
@@ -40,7 +42,7 @@ Details: [Gateway runbook](/gateway) and [Bundled bun Gateway](/platforms/mac/bu
   - `Clawdbot` (LSUIElement MenuBarExtra app; hosts Gateway + node bridge + PeekabooBridgeHost).
 - Bundle ID: `com.clawdbot.mac`.
 - Bundled runtime binaries live under `Contents/Resources/Relay/`:
-  - `clawdbot` (bun‑compiled relay: CLI + gateway-daemon)
+  - `clawdbot` (bun‑compiled relay: CLI + gateway)
 - The app symlinks `clawdbot` into `/usr/local/bin` and `/opt/homebrew/bin`.
 
 ## Gateway + node bridge
@@ -65,7 +67,7 @@ Details: [Gateway runbook](/gateway) and [Bundled bun Gateway](/platforms/mac/bu
 ## CLI (`clawdbot`)
 - The **only** CLI is `clawdbot` (TS/bun). There is no `clawdbot-mac` helper.
 - For mac‑specific actions, the CLI uses `node.invoke`:
-  - `clawdbot canvas present|navigate|eval|snapshot|a2ui push|a2ui reset`
+  - `clawdbot nodes canvas present|navigate|eval|snapshot|a2ui push|a2ui reset`
   - `clawdbot nodes run --node <id> -- <command...>`
   - `clawdbot nodes notify --node <id> --title ...`
 

@@ -17,6 +17,8 @@ import type {
   CronRunLogEntry,
   CronStatus,
   HealthSnapshot,
+  LogEntry,
+  LogLevel,
   PresenceEntry,
   ProvidersStatusSnapshot,
   SessionsListResult,
@@ -37,6 +39,7 @@ import { renderConnections } from "./views/connections";
 import { renderCron } from "./views/cron";
 import { renderDebug } from "./views/debug";
 import { renderInstances } from "./views/instances";
+import { renderLogs } from "./views/logs";
 import { renderNodes } from "./views/nodes";
 import { renderOverview } from "./views/overview";
 import { renderSessions } from "./views/sessions";
@@ -69,6 +72,7 @@ import {
 } from "./controllers/config";
 import { loadCronRuns, toggleCronJob, runCronJob, removeCronJob, addCronJob } from "./controllers/cron";
 import { loadDebug, callDebugMethod } from "./controllers/debug";
+import { loadLogs } from "./controllers/logs";
 
 export type EventLogEntry = {
   ts: number;
@@ -172,6 +176,14 @@ export type AppViewState = {
   debugCallParams: string;
   debugCallResult: string | null;
   debugCallError: string | null;
+  logsLoading: boolean;
+  logsError: string | null;
+  logsFile: string | null;
+  logsEntries: LogEntry[];
+  logsFilterText: string;
+  logsLevelFilters: Record<LogLevel, boolean>;
+  logsAutoFollow: boolean;
+  logsTruncated: boolean;
   client: GatewayBrowserClient | null;
   connect: () => void;
   setTab: (tab: Tab) => void;
@@ -185,6 +197,8 @@ export type AppViewState = {
   handleTelegramSave: () => Promise<void>;
   handleSendChat: () => Promise<void>;
   resetToolStream: () => void;
+  handleLogsScroll: (event: Event) => void;
+  exportLogs: (lines: string[], label: string) => void;
 };
 
 export function renderApp(state: AppViewState) {
@@ -208,6 +222,16 @@ export function renderApp(state: AppViewState) {
             <span>Health</span>
             <span class="mono">${state.connected ? "OK" : "Offline"}</span>
           </div>
+          ${isChat
+            ? renderChatFocusToggle(
+                state.settings.chatFocusMode,
+                () =>
+                  state.applySettings({
+                    ...state.settings,
+                    chatFocusMode: !state.settings.chatFocusMode,
+                  }),
+              )
+            : nothing}
           ${renderThemeToggle(state)}
         </div>
       </header>
@@ -258,8 +282,8 @@ export function renderApp(state: AppViewState) {
                   lastActiveSessionKey: next,
                 });
               },
+              onConnect: () => state.connect(),
               onRefresh: () => state.loadOverview(),
-              onReconnect: () => state.connect(),
             })
           : nothing}
 
@@ -416,16 +440,13 @@ export function renderApp(state: AppViewState) {
               disabledReason: chatDisabledReason,
               error: state.lastError,
               sessions: state.sessionsResult,
-              focusMode: state.settings.chatFocusMode,
+              isToolOutputExpanded: (id) => state.toolOutputExpanded.has(id),
+              onToolOutputToggle: (id, expanded) =>
+                state.toggleToolOutput(id, expanded),
               onRefresh: () => {
                 state.resetToolStream();
                 return loadChatHistory(state);
               },
-              onToggleFocusMode: () =>
-                state.applySettings({
-                  ...state.settings,
-                  chatFocusMode: !state.settings.chatFocusMode,
-                }),
               onDraftChange: (next) => (state.chatMessage = next),
               onSend: () => state.handleSendChat(),
             })
@@ -472,6 +493,27 @@ export function renderApp(state: AppViewState) {
               onCallParamsChange: (next) => (state.debugCallParams = next),
               onRefresh: () => loadDebug(state),
               onCall: () => callDebugMethod(state),
+            })
+          : nothing}
+
+        ${state.tab === "logs"
+          ? renderLogs({
+              loading: state.logsLoading,
+              error: state.logsError,
+              file: state.logsFile,
+              entries: state.logsEntries,
+              filterText: state.logsFilterText,
+              levelFilters: state.logsLevelFilters,
+              autoFollow: state.logsAutoFollow,
+              truncated: state.logsTruncated,
+              onFilterTextChange: (next) => (state.logsFilterText = next),
+              onLevelToggle: (level, enabled) => {
+                state.logsLevelFilters = { ...state.logsLevelFilters, [level]: enabled };
+              },
+              onToggleAutoFollow: (next) => (state.logsAutoFollow = next),
+              onRefresh: () => loadLogs(state, { reset: true }),
+              onExport: (lines, label) => state.exportLogs(lines, label),
+              onScroll: (event) => state.handleLogsScroll(event),
             })
           : nothing}
       </main>
@@ -552,6 +594,19 @@ function renderThemeToggle(state: AppViewState) {
         </button>
       </div>
     </div>
+  `;
+}
+
+function renderChatFocusToggle(focusMode: boolean, onToggle: () => void) {
+  return html`
+    <button
+      class="btn ${focusMode ? "active" : ""}"
+      @click=${onToggle}
+      aria-pressed=${focusMode}
+      title="Toggle focus mode (hide sidebar + page header)"
+    >
+      Focus
+    </button>
   `;
 }
 

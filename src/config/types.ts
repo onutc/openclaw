@@ -93,6 +93,7 @@ export type AgentElevatedAllowFromConfig = {
 
 export type WhatsAppActionConfig = {
   reactions?: boolean;
+  sendMessage?: boolean;
 };
 
 export type WhatsAppConfig = {
@@ -129,6 +130,8 @@ export type WhatsAppConfig = {
 };
 
 export type WhatsAppAccountConfig = {
+  /** Optional display name for this account (used in CLI/UI lists). */
+  name?: string;
   /** If false, do not start this WhatsApp account provider. Default: true. */
   enabled?: boolean;
   /** Override auth directory (Baileys multi-file auth state). */
@@ -256,6 +259,51 @@ export type HooksConfig = {
 
 export type TelegramActionConfig = {
   reactions?: boolean;
+  sendMessage?: boolean;
+};
+
+export type TelegramAccountConfig = {
+  /** Optional display name for this account (used in CLI/UI lists). */
+  name?: string;
+  /**
+   * Controls how Telegram direct chats (DMs) are handled:
+   * - "pairing" (default): unknown senders get a pairing code; owner must approve
+   * - "allowlist": only allow senders in allowFrom (or paired allow store)
+   * - "open": allow all inbound DMs (requires allowFrom to include "*")
+   * - "disabled": ignore all inbound DMs
+   */
+  dmPolicy?: DmPolicy;
+  /** If false, do not start this Telegram account. Default: true. */
+  enabled?: boolean;
+  botToken?: string;
+  /** Path to file containing bot token (for secret managers like agenix). */
+  tokenFile?: string;
+  /** Control reply threading when reply tags are present (off|first|all). */
+  replyToMode?: ReplyToMode;
+  groups?: Record<string, TelegramGroupConfig>;
+  allowFrom?: Array<string | number>;
+  /** Optional allowlist for Telegram group senders (user ids or usernames). */
+  groupAllowFrom?: Array<string | number>;
+  /**
+   * Controls how group messages are handled:
+   * - "open" (default): groups bypass allowFrom, only mention-gating applies
+   * - "disabled": block all group messages entirely
+   * - "allowlist": only allow group messages from senders in groupAllowFrom/allowFrom
+   */
+  groupPolicy?: GroupPolicy;
+  /** Outbound text chunk size (chars). Default: 4000. */
+  textChunkLimit?: number;
+  /** Draft streaming mode for Telegram (off|partial|block). Default: partial. */
+  streamMode?: "off" | "partial" | "block";
+  mediaMaxMb?: number;
+  /** Retry policy for outbound Telegram API calls. */
+  retry?: OutboundRetryConfig;
+  proxy?: string;
+  webhookUrl?: string;
+  webhookSecret?: string;
+  webhookPath?: string;
+  /** Per-action tool gating (default: true for all). */
+  actions?: TelegramActionConfig;
 };
 
 export type TelegramTopicConfig = {
@@ -285,46 +333,9 @@ export type TelegramGroupConfig = {
 };
 
 export type TelegramConfig = {
-  /**
-   * Controls how Telegram direct chats (DMs) are handled:
-   * - "pairing" (default): unknown senders get a pairing code; owner must approve
-   * - "allowlist": only allow senders in allowFrom (or paired allow store)
-   * - "open": allow all inbound DMs (requires allowFrom to include "*")
-   * - "disabled": ignore all inbound DMs
-   */
-  dmPolicy?: DmPolicy;
-  /** If false, do not start the Telegram provider. Default: true. */
-  enabled?: boolean;
-  botToken?: string;
-  /** Path to file containing bot token (for secret managers like agenix) */
-  tokenFile?: string;
-  /** Control reply threading when reply tags are present (off|first|all). */
-  replyToMode?: ReplyToMode;
-  groups?: Record<string, TelegramGroupConfig>;
-  allowFrom?: Array<string | number>;
-  /** Optional allowlist for Telegram group senders (user ids or usernames). */
-  groupAllowFrom?: Array<string | number>;
-  /**
-   * Controls how group messages are handled:
-   * - "open" (default): groups bypass allowFrom, only mention-gating applies
-   * - "disabled": block all group messages entirely
-   * - "allowlist": only allow group messages from senders in groupAllowFrom/allowFrom
-   */
-  groupPolicy?: GroupPolicy;
-  /** Outbound text chunk size (chars). Default: 4000. */
-  textChunkLimit?: number;
-  /** Draft streaming mode for Telegram (off|partial|block). Default: partial. */
-  streamMode?: "off" | "partial" | "block";
-  mediaMaxMb?: number;
-  /** Retry policy for outbound Telegram API calls. */
-  retry?: OutboundRetryConfig;
-  proxy?: string;
-  webhookUrl?: string;
-  webhookSecret?: string;
-  webhookPath?: string;
-  /** Per-action tool gating (default: true for all). */
-  actions?: TelegramActionConfig;
-};
+  /** Optional per-account Telegram configuration (multi-account). */
+  accounts?: Record<string, TelegramAccountConfig>;
+} & TelegramAccountConfig;
 
 export type DiscordDmConfig = {
   /** If false, ignore all incoming Discord DMs. Default: true. */
@@ -387,8 +398,10 @@ export type DiscordActionConfig = {
   stickerUploads?: boolean;
 };
 
-export type DiscordConfig = {
-  /** If false, do not start the Discord provider. Default: true. */
+export type DiscordAccountConfig = {
+  /** Optional display name for this account (used in CLI/UI lists). */
+  name?: string;
+  /** If false, do not start this Discord account. Default: true. */
   enabled?: boolean;
   token?: string;
   /**
@@ -400,6 +413,12 @@ export type DiscordConfig = {
   groupPolicy?: GroupPolicy;
   /** Outbound text chunk size (chars). Default: 2000. */
   textChunkLimit?: number;
+  /**
+   * Soft max line count per Discord message.
+   * Discord clients can clip/collapse very tall messages; splitting by lines
+   * keeps replies readable in-channel. Default: 17.
+   */
+  maxLinesPerMessage?: number;
   mediaMaxMb?: number;
   historyLimit?: number;
   /** Retry policy for outbound Discord API calls. */
@@ -412,6 +431,11 @@ export type DiscordConfig = {
   /** New per-guild config keyed by guild id or slug. */
   guilds?: Record<string, DiscordGuildEntry>;
 };
+
+export type DiscordConfig = {
+  /** Optional per-account Discord configuration (multi-account). */
+  accounts?: Record<string, DiscordAccountConfig>;
+} & DiscordAccountConfig;
 
 export type SlackDmConfig = {
   /** If false, ignore all incoming Slack DMs. Default: true. */
@@ -465,8 +489,10 @@ export type SlackSlashCommandConfig = {
   ephemeral?: boolean;
 };
 
-export type SlackConfig = {
-  /** If false, do not start the Slack provider. Default: true. */
+export type SlackAccountConfig = {
+  /** Optional display name for this account (used in CLI/UI lists). */
+  name?: string;
+  /** If false, do not start this Slack account. Default: true. */
   enabled?: boolean;
   botToken?: string;
   appToken?: string;
@@ -483,14 +509,23 @@ export type SlackConfig = {
   reactionNotifications?: SlackReactionNotificationMode;
   /** Allowlist for reaction notifications when mode is allowlist. */
   reactionAllowlist?: Array<string | number>;
+  /** Control reply threading when reply tags are present (off|first|all). */
+  replyToMode?: ReplyToMode;
   actions?: SlackActionConfig;
   slashCommand?: SlackSlashCommandConfig;
   dm?: SlackDmConfig;
   channels?: Record<string, SlackChannelConfig>;
 };
 
-export type SignalConfig = {
-  /** If false, do not start the Signal provider. Default: true. */
+export type SlackConfig = {
+  /** Optional per-account Slack configuration (multi-account). */
+  accounts?: Record<string, SlackAccountConfig>;
+} & SlackAccountConfig;
+
+export type SignalAccountConfig = {
+  /** Optional display name for this account (used in CLI/UI lists). */
+  name?: string;
+  /** If false, do not start this Signal account. Default: true. */
   enabled?: boolean;
   /** Optional explicit E.164 account for signal-cli. */
   account?: string;
@@ -525,10 +560,15 @@ export type SignalConfig = {
   mediaMaxMb?: number;
 };
 
+export type SignalConfig = {
+  /** Optional per-account Signal configuration (multi-account). */
+  accounts?: Record<string, SignalAccountConfig>;
+} & SignalAccountConfig;
+
 export type MSTeamsWebhookConfig = {
   /** Port for the webhook server. Default: 3978. */
   port?: number;
-  /** Path for the messages endpoint. Default: /msteams/messages. */
+  /** Path for the messages endpoint. Default: /api/messages. */
   path?: string;
 };
 
@@ -549,7 +589,7 @@ export type MSTeamsTeamConfig = {
   requireMention?: boolean;
   /** Default reply style for channels in this team. */
   replyStyle?: MSTeamsReplyStyle;
-  /** Per-channel overrides. Key is channel ID (e.g., "19:abc@thread.tacv2"). */
+  /** Per-channel overrides. Key is conversation ID (e.g., "19:...@thread.tacv2"). */
   channels?: Record<string, MSTeamsChannelConfig>;
 };
 
@@ -572,14 +612,16 @@ export type MSTeamsConfig = {
   textChunkLimit?: number;
   /** Default: require @mention to respond in channels/groups. */
   requireMention?: boolean;
-  /** Default reply style: "thread" replies to the message, "top-level" posts a new message. Default: thread. */
+  /** Default reply style: "thread" replies to the message, "top-level" posts a new message. */
   replyStyle?: MSTeamsReplyStyle;
   /** Per-team config. Key is team ID (groupId from Teams URL). */
   teams?: Record<string, MSTeamsTeamConfig>;
 };
 
-export type IMessageConfig = {
-  /** If false, do not start the iMessage provider. Default: true. */
+export type IMessageAccountConfig = {
+  /** Optional display name for this account (used in CLI/UI lists). */
+  name?: string;
+  /** If false, do not start this iMessage account. Default: true. */
   enabled?: boolean;
   /** imsg CLI binary path (default: imsg). */
   cliPath?: string;
@@ -615,6 +657,11 @@ export type IMessageConfig = {
     }
   >;
 };
+
+export type IMessageConfig = {
+  /** Optional per-account iMessage configuration (multi-account). */
+  accounts?: Record<string, IMessageAccountConfig>;
+} & IMessageAccountConfig;
 
 export type QueueMode =
   | "steer"
@@ -726,6 +773,10 @@ export type RoutingConfig = {
       workspace?: string;
       agentDir?: string;
       model?: string;
+      subagents?: {
+        /** Allow spawning sub-agents under other agent ids. Use "*" to allow any. */
+        allowAgents?: string[];
+      };
       sandbox?: {
         mode?: "off" | "non-main" | "all";
         /** Agent workspace access inside the sandbox. */
@@ -991,6 +1042,8 @@ export type AuthConfig = {
 
 export type AgentModelEntryConfig = {
   alias?: string;
+  /** Provider-specific API parameters (e.g., GLM-4.7 thinking mode). */
+  params?: Record<string, unknown>;
 };
 
 export type AgentModelListConfig = {

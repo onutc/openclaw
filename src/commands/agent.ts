@@ -1,4 +1,8 @@
 import crypto from "node:crypto";
+import {
+  resolveAgentDir,
+  resolveAgentWorkspaceDir,
+} from "../agents/agent-scope.js";
 import { ensureAuthProfileStore } from "../agents/auth-profiles.js";
 import { lookupContextTokens } from "../agents/context.js";
 import {
@@ -18,10 +22,7 @@ import { runEmbeddedPiAgent } from "../agents/pi-embedded.js";
 import { buildWorkspaceSkillSnapshot } from "../agents/skills.js";
 import { resolveAgentTimeoutMs } from "../agents/timeout.js";
 import { hasNonzeroUsage } from "../agents/usage.js";
-import {
-  DEFAULT_AGENT_WORKSPACE_DIR,
-  ensureAgentWorkspace,
-} from "../agents/workspace.js";
+import { ensureAgentWorkspace } from "../agents/workspace.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import {
   normalizeThinkLevel,
@@ -180,7 +181,9 @@ export async function agentCommand(
 
   const cfg = loadConfig();
   const agentCfg = cfg.agent;
-  const workspaceDirRaw = cfg.agent?.workspace ?? DEFAULT_AGENT_WORKSPACE_DIR;
+  const sessionAgentId = resolveAgentIdFromSessionKey(opts.sessionKey?.trim());
+  const workspaceDirRaw = resolveAgentWorkspaceDir(cfg, sessionAgentId);
+  const agentDir = resolveAgentDir(cfg, sessionAgentId);
   const workspace = await ensureAgentWorkspace({
     dir: workspaceDirRaw,
     ensureBootstrapFiles: !cfg.agent?.skipBootstrap,
@@ -427,6 +430,7 @@ export async function agentCommand(
           lane: opts.lane,
           abortSignal: opts.abortSignal,
           extraSystemPrompt: opts.extraSystemPrompt,
+          agentDir,
           onAgentEvent: (evt) => {
             if (
               evt.stream === "lifecycle" &&

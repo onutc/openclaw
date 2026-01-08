@@ -543,6 +543,7 @@
           "concepts/architecture",
           "concepts/agent",
           "concepts/agent-loop",
+          "concepts/system-prompt",
           "concepts/agent-workspace",
           "concepts/multi-agent",
           "concepts/compaction",
@@ -569,6 +570,7 @@
           "gateway/pairing",
           "gateway/gateway-lock",
           "gateway/configuration",
+          "gateway/configuration-examples",
           "gateway/background-process",
           "gateway/health",
           "gateway/heartbeat",
@@ -652,7 +654,8 @@
           "platforms/ios",
           "platforms/android",
           "platforms/windows",
-          "platforms/linux"
+          "platforms/linux",
+          "platforms/exe-dev"
         ]
       },
       {

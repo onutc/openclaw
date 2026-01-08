@@ -8,6 +8,8 @@ import {
   GATEWAY_SYSTEMD_SERVICE_NAME,
   LEGACY_GATEWAY_SYSTEMD_SERVICE_NAMES,
 } from "./constants.js";
+import { parseKeyValueOutput } from "./runtime-parse.js";
+import type { GatewayServiceRuntime } from "./service-runtime.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -215,6 +217,36 @@ export async function readSystemdServiceExecStart(
   }
 }
 
+export type SystemdServiceInfo = {
+  activeState?: string;
+  subState?: string;
+  mainPid?: number;
+  execMainStatus?: number;
+  execMainCode?: string;
+};
+
+export function parseSystemdShow(output: string): SystemdServiceInfo {
+  const entries = parseKeyValueOutput(output, "=");
+  const info: SystemdServiceInfo = {};
+  const activeState = entries.activestate;
+  if (activeState) info.activeState = activeState;
+  const subState = entries.substate;
+  if (subState) info.subState = subState;
+  const mainPidValue = entries.mainpid;
+  if (mainPidValue) {
+    const pid = Number.parseInt(mainPidValue, 10);
+    if (Number.isFinite(pid) && pid > 0) info.mainPid = pid;
+  }
+  const execMainStatusValue = entries.execmainstatus;
+  if (execMainStatusValue) {
+    const status = Number.parseInt(execMainStatusValue, 10);
+    if (Number.isFinite(status)) info.execMainStatus = status;
+  }
+  const execMainCode = entries.execmaincode;
+  if (execMainCode) info.execMainCode = execMainCode;
+  return info;
+}
+
 async function execSystemctl(
   args: string[],
 ): Promise<{ stdout: string; stderr: string; code: number }> {
@@ -368,6 +400,47 @@ export async function isSystemdServiceEnabled(): Promise<boolean> {
   const unitName = `${GATEWAY_SYSTEMD_SERVICE_NAME}.service`;
   const res = await execSystemctl(["--user", "is-enabled", unitName]);
   return res.code === 0;
+}
+
+export async function readSystemdServiceRuntime(): Promise<GatewayServiceRuntime> {
+  try {
+    await assertSystemdAvailable();
+  } catch (err) {
+    return {
+      status: "unknown",
+      detail: String(err),
+    };
+  }
+  const unitName = `${GATEWAY_SYSTEMD_SERVICE_NAME}.service`;
+  const res = await execSystemctl([
+    "--user",
+    "show",
+    unitName,
+    "--no-page",
+    "--property",
+    "ActiveState,SubState,MainPID,ExecMainStatus,ExecMainCode",
+  ]);
+  if (res.code !== 0) {
+    const detail = (res.stderr || res.stdout).trim();
+    const missing = detail.toLowerCase().includes("not found");
+    return {
+      status: missing ? "stopped" : "unknown",
+      detail: detail || undefined,
+      missingUnit: missing,
+    };
+  }
+  const parsed = parseSystemdShow(res.stdout || "");
+  const activeState = parsed.activeState?.toLowerCase();
+  const status =
+    activeState === "active" ? "running" : activeState ? "stopped" : "unknown";
+  return {
+    status,
+    state: parsed.activeState,
+    subState: parsed.subState,
+    pid: parsed.mainPid,
+    lastExitStatus: parsed.execMainStatus,
+    lastExitReason: parsed.execMainCode,
+  };
 }
 export type LegacySystemdUnit = {
   name: string;
