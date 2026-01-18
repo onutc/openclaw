@@ -62,4 +62,28 @@ describe("detect-secrets vectors (adapted)", () => {
     ].join("\n");
     expect(detect(pem).blocked).toBe(true);
   });
+
+  it("detects keyword-style assignments and comparisons", () => {
+    const withSpaces = 'password = "value with quotes and spaces"';
+    const goAssign = 'password := "mysecretvalue"';
+    const unquoted = "db_pass := abc123";
+    const reverseCompare = 'if ("supersecret" == my_password) {';
+    const bareQuoted = 'private_key "hopenobodyfindsthisone";';
+    expect(detect(withSpaces).blocked).toBe(true);
+    expect(detect(goAssign).blocked).toBe(true);
+    expect(detect(unquoted).blocked).toBe(true);
+    expect(detect(reverseCompare).blocked).toBe(true);
+    expect(detect(bareQuoted).blocked).toBe(true);
+  });
+
+  it("ignores keyword false positives", () => {
+    const empty = 'password = ""';
+    const fake = 'password = "somefakekey"';
+    const template = "password: ${link}";
+    const symbols = 'password = ",.:-"';
+    expect(detect(empty).blocked).toBe(false);
+    expect(detect(fake).blocked).toBe(false);
+    expect(detect(template).blocked).toBe(false);
+    expect(detect(symbols).blocked).toBe(false);
+  });
 });
