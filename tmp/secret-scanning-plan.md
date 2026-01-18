@@ -1,27 +1,32 @@
-# Runtime Secret Scanning Plan (Full Protection or Off)
+# Runtime Secret Scanning Plan (Off / Redact / Block)
 
 ## Goals
-- Provide **binary behavior**: secret scanning is either **off** or **full protection**.
-- When enabled, **block** messages on **any detection** and **block** messages that exceed the scan cap.
+- Provide **three modes**: **off**, **redact**, or **block**.
+- Overflow behavior is **independent of mode** (ignored when off):
+  - **truncate** (scan up to cap, mark truncated)
+  - **block** (fail closed on overflow)
 - Use **RE2** for regex safety with untrusted input.
 - Keep scanner warm (compile once, minimal per-call allocations).
 
 ## Decisions Needed (confirm)
 - Default scan cap (e.g., 32k vs 64k chars).
 - Whether to include a hard max cap beyond configurable cap.
+- Overflow policy default: **truncate** or **block**.
 - Error message copy for “blocked due to size” and “blocked due to secret detection”.
 
 ## Proposed Config Surface
 - New config section: `security.secretScanning`.
-  - `enabled: boolean` (default: false).
+  - `mode: "off" | "redact" | "block"` (default: "off").
   - `maxChars: number` (cap; block if exceeded).
-  - `mode: "block-all"` (implicit when enabled; no partial modes).
+  - `overflow: "truncate" | "block"` (default: "block" or "truncate").
   - Optional `redactPreview: boolean` (allow redacted previews in logs/errors).
 
 ## Core Module (PR 1)
 - New module: `src/security/secret-scan/`.
   - `scanText(text, opts)` returns `{ blocked: boolean; reason; matches; truncated: boolean; redactedText; }`.
-  - **No partial scanning**: if `text.length > maxChars` ⇒ `blocked: true`, `reason: "too_long"`.
+  - **Overflow behavior**:
+    - `overflow: "block"`: if `text.length > maxChars` ⇒ `blocked: true`, `reason: "too_long"`.
+    - `overflow: "truncate"`: scan `text.slice(0, maxChars)` and set `truncated: true`.
   - Detector families:
     - **Known formats**: token prefixes (sk-, ghp_, xoxb-, etc.), Authorization headers, PEM blocks.
     - **Entropy detectors**: base64/hex candidates with thresholds.
@@ -42,6 +47,8 @@
 - On block:
   - Return explicit error response: “Message blocked: secret scanning is enabled and input exceeds limit” or “secret detected.”
   - Do **not** leak raw secrets in errors.
+ - On redact:
+   - Redact detected spans in the scanned content (and only within scanned range if truncated).
 
 ## Rollout
 - Default **off** to avoid breaking existing installs.
