@@ -68,6 +68,7 @@ export type SpawnResult = {
   code: number | null;
   signal: NodeJS.Signals | null;
   killed: boolean;
+  noOutputTimedOut?: boolean;
 };
 
 export type CommandOptions = {
@@ -76,6 +77,7 @@ export type CommandOptions = {
   input?: string;
   env?: NodeJS.ProcessEnv;
   windowsVerbatimArguments?: boolean;
+  noOutputTimeoutMs?: number;
 };
 
 export async function runCommandWithTimeout(
@@ -84,7 +86,7 @@ export async function runCommandWithTimeout(
 ): Promise<SpawnResult> {
   const options: CommandOptions =
     typeof optionsOrTimeout === "number" ? { timeoutMs: optionsOrTimeout } : optionsOrTimeout;
-  const { timeoutMs, cwd, input, env } = options;
+  const { timeoutMs, cwd, input, env, noOutputTimeoutMs } = options;
   const { windowsVerbatimArguments } = options;
   const hasInput = input !== undefined;
 
@@ -122,11 +124,43 @@ export async function runCommandWithTimeout(
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let noOutputTimedOut = false;
+    let noOutputTimer: NodeJS.Timeout | null = null;
+    const shouldTrackOutputTimeout =
+      typeof noOutputTimeoutMs === "number" &&
+      Number.isFinite(noOutputTimeoutMs) &&
+      noOutputTimeoutMs > 0;
+
+    const clearNoOutputTimer = () => {
+      if (!noOutputTimer) {
+        return;
+      }
+      clearTimeout(noOutputTimer);
+      noOutputTimer = null;
+    };
+
+    const armNoOutputTimer = () => {
+      if (!shouldTrackOutputTimeout || settled) {
+        return;
+      }
+      clearNoOutputTimer();
+      noOutputTimer = setTimeout(() => {
+        if (settled) {
+          return;
+        }
+        noOutputTimedOut = true;
+        if (typeof child.kill === "function") {
+          child.kill("SIGKILL");
+        }
+      }, Math.floor(noOutputTimeoutMs));
+    };
+
     const timer = setTimeout(() => {
       if (typeof child.kill === "function") {
         child.kill("SIGKILL");
       }
     }, timeoutMs);
+    armNoOutputTimer();
 
     if (hasInput && child.stdin) {
       child.stdin.write(input ?? "");
@@ -135,9 +169,11 @@ export async function runCommandWithTimeout(
 
     child.stdout?.on("data", (d) => {
       stdout += d.toString();
+      armNoOutputTimer();
     });
     child.stderr?.on("data", (d) => {
       stderr += d.toString();
+      armNoOutputTimer();
     });
     child.on("error", (err) => {
       if (settled) {
@@ -145,6 +181,7 @@ export async function runCommandWithTimeout(
       }
       settled = true;
       clearTimeout(timer);
+      clearNoOutputTimer();
       reject(err);
     });
     child.on("close", (code, signal) => {
@@ -153,7 +190,15 @@ export async function runCommandWithTimeout(
       }
       settled = true;
       clearTimeout(timer);
-      resolve({ stdout, stderr, code, signal, killed: child.killed });
+      clearNoOutputTimer();
+      resolve({
+        stdout,
+        stderr,
+        code,
+        signal,
+        killed: child.killed,
+        noOutputTimedOut,
+      });
     });
   });
 }
