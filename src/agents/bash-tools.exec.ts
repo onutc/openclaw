@@ -127,11 +127,13 @@ const APPROVAL_SLUG_LENGTH = 8;
 
 type PtyExitEvent = { exitCode: number; signal?: number };
 type PtyListener<T> = (event: T) => void;
+type PtyDisposable = { dispose: () => void };
 type PtyHandle = {
   pid: number;
   write: (data: string | Buffer) => void;
-  onData: (listener: PtyListener<string>) => void;
-  onExit: (listener: PtyListener<PtyExitEvent>) => void;
+  onData: (listener: PtyListener<string>) => PtyDisposable | void;
+  onExit: (listener: PtyListener<PtyExitEvent>) => PtyDisposable | void;
+  kill: () => void;
 };
 type PtySpawn = (
   file: string,
@@ -144,6 +146,75 @@ type PtySpawn = (
     env?: Record<string, string>;
   },
 ) => PtyHandle;
+
+type PtyLifecycle = {
+  attachData: (listener: PtyListener<string>) => void;
+  attachExit: (listener: PtyListener<PtyExitEvent>) => void;
+  kill: () => void;
+  dispose: () => void;
+  cleanup: (opts?: { kill?: boolean }) => void;
+};
+
+function createPtyLifecycle(pty: PtyHandle | null): PtyLifecycle {
+  let ptyDataDisposable: PtyDisposable | null = null;
+  let ptyExitDisposable: PtyDisposable | null = null;
+  let ptyKilled = false;
+  let ptyDisposed = false;
+
+  const kill = () => {
+    if (!pty || ptyKilled) {
+      return;
+    }
+    ptyKilled = true;
+    try {
+      pty.kill();
+    } catch {
+      // ignore PTY kill errors
+    }
+  };
+
+  const dispose = () => {
+    if (ptyDisposed) {
+      return;
+    }
+    ptyDisposed = true;
+    try {
+      ptyDataDisposable?.dispose();
+    } catch {
+      // ignore PTY listener dispose errors
+    }
+    try {
+      ptyExitDisposable?.dispose();
+    } catch {
+      // ignore PTY listener dispose errors
+    }
+    ptyDataDisposable = null;
+    ptyExitDisposable = null;
+  };
+
+  return {
+    attachData: (listener) => {
+      if (!pty) {
+        return;
+      }
+      ptyDataDisposable = pty.onData(listener) ?? null;
+    },
+    attachExit: (listener) => {
+      if (!pty) {
+        return;
+      }
+      ptyExitDisposable = pty.onExit(listener) ?? null;
+    },
+    kill,
+    dispose,
+    cleanup: (opts) => {
+      if (opts?.kill) {
+        kill();
+      }
+      dispose();
+    },
+  };
+}
 
 type ExecProcessOutcome = {
   status: "completed" | "failed";
@@ -604,6 +675,7 @@ async function runExecProcess(opts: {
   let timedOut = false;
   const timeoutFinalizeMs = 1000;
   let resolveFn: ((outcome: ExecProcessOutcome) => void) | null = null;
+  const ptyLifecycle = createPtyLifecycle(pty);
 
   const settle = (outcome: ExecProcessOutcome) => {
     if (settled) {
@@ -617,6 +689,7 @@ async function runExecProcess(opts: {
     if (session.exited) {
       return;
     }
+    ptyLifecycle.cleanup({ kill: true });
     markExited(session, null, "SIGKILL", "failed");
     maybeNotifyOnExit(session, "failed");
     const aggregated = session.aggregated.trim();
@@ -635,6 +708,7 @@ async function runExecProcess(opts: {
   const onTimeout = () => {
     timedOut = true;
     killSession(session);
+    ptyLifecycle.kill();
     if (!timeoutFinalizeTimer) {
       timeoutFinalizeTimer = setTimeout(() => {
         finalizeTimeout();
@@ -685,7 +759,7 @@ async function runExecProcess(opts: {
 
   if (pty) {
     const cursorResponse = buildCursorPositionResponse();
-    pty.onData((data) => {
+    ptyLifecycle.attachData((data) => {
       const raw = data.toString();
       const { cleaned, requests } = stripDsrRequests(raw);
       if (requests > 0) {
@@ -709,6 +783,7 @@ async function runExecProcess(opts: {
       if (timeoutFinalizeTimer) {
         clearTimeout(timeoutFinalizeTimer);
       }
+      ptyLifecycle.cleanup();
       const durationMs = Date.now() - startedAt;
       const wasSignal = exitSignal != null;
       const isSuccess = code === 0 && !wasSignal && !timedOut;
@@ -754,7 +829,7 @@ async function runExecProcess(opts: {
     };
 
     if (pty) {
-      pty.onExit((event) => {
+      ptyLifecycle.attachExit((event) => {
         const rawSignal = event.signal ?? null;
         const normalizedSignal = rawSignal === 0 ? null : rawSignal;
         handleExit(event.exitCode ?? null, normalizedSignal);
@@ -771,6 +846,7 @@ async function runExecProcess(opts: {
         if (timeoutFinalizeTimer) {
           clearTimeout(timeoutFinalizeTimer);
         }
+        ptyLifecycle.cleanup({ kill: true });
         markExited(session, null, null, "failed");
         maybeNotifyOnExit(session, "failed");
         const aggregated = session.aggregated.trim();
@@ -793,7 +869,10 @@ async function runExecProcess(opts: {
     startedAt,
     pid: session.pid ?? undefined,
     promise,
-    kill: () => killSession(session),
+    kill: () => {
+      ptyLifecycle.kill();
+      killSession(session);
+    },
   };
 }
 
