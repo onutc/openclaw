@@ -1,421 +1,340 @@
 ---
-summary: "Design the long term process supervision model for PTY and CLI runs with explicit ownership, unified cancellation, and deterministic cleanup"
+summary: "Production plan for reliable interactive process supervision (PTY + non-PTY) with explicit ownership, unified lifecycle, and deterministic cleanup"
 owner: "openclaw"
-status: "proposed"
-last_updated: "2026-02-11"
-title: "PTY Process Supervision Architecture"
+status: "in-progress"
+last_updated: "2026-02-15"
+title: "PTY and Process Supervision Plan"
 ---
 
-# PTY Process Supervision Architecture
+# PTY and Process Supervision Plan
 
-## Context
+## 1. What we are solving
 
-We hit repeated resume failures where long running CLI sessions stalled and cleanup behavior was unsafe or too broad.
+We want reliable interactive command execution for agent workflows.
 
-Root cause in one sentence: We had no reliable process ownership model, so resume runs could be killed by heuristic cleanup or timeout/PTY races instead of deterministic lifecycle control.
+In plain language:
 
-Observed symptoms:
+- `exec` should be able to start both normal and terminal-like commands.
+- long-running commands should be safe to background.
+- `process` should let us continue interacting with those runs (poll output, send keys, paste, submit, kill).
+- timeouts and cancellation should be predictable.
+- cleanup must never kill unrelated processes.
 
-- Resume attempts appeared stuck with no writes for minutes.
-- PTY backed runs were at risk during long silent periods.
-- Broad cleanup patterns (`pkill -f`) could kill unrelated processes.
-- Timeout handling mixed multiple failure modes into one bucket.
+The core objective is not "add PTY". The objective is one trustworthy lifecycle for process runs.
 
-This proposal is written for the pre-rewrite baseline.
+## 2. System goal and boundaries
 
-Current baseline problems:
+### Goal
 
-- Cleanup relies on process table and command text matching, which is heuristic.
-- PTY and non PTY lifecycle handling is split, increasing drift and leaks.
-- Timeout and cancel paths are not unified under a single cancellation primitive.
-- Failure reasons are not normalized enough for reliable ops and incident triage.
-- There is no durable ownership model for spawned runs.
+Provide a single, production-safe process lifecycle model for:
 
-## Why A Full Rewrite
+- PTY runs (`pty: true`) for terminal-required CLIs.
+- non-PTY runs for normal command execution.
+- background continuation via the `process` tool.
 
-Incremental fixes can reduce immediate incidents, but they do not remove the root issue:
-we do not have deterministic ownership and supervision for processes.
+### Non-goals (for this plan)
 
-Without ownership, cleanup becomes guesswork.
-Without one lifecycle, edge cases multiply.
-Without one cancellation model, timeout races remain.
+- full terminal multiplexer behavior (tmux-like features).
+- durable terminal replay across restart.
+- introducing a new workspace package for supervisor code.
 
-## North Star
+### Scope location
 
-The target is simple:
+- Keep implementation internal under `src/process/supervisor`.
+- Do not move this to `extensions/*`.
 
-`Only kill processes that OpenClaw owns. Never guess from process table strings.`
+## 3. Current state (as of this branch)
 
-That requires one supervisor model for PTY and non PTY execution.
+The branch already moved major lifecycle logic into supervisor:
 
-## Design Principles
+- Added supervisor module:
+  - `src/process/supervisor/types.ts`
+  - `src/process/supervisor/registry.ts`
+  - `src/process/supervisor/supervisor.ts`
+  - `src/process/supervisor/adapters/child.ts`
+  - `src/process/supervisor/adapters/pty.ts`
+  - `src/process/supervisor/index.ts`
+- Wired CLI runner to supervisor watchdog/scope model.
+- Wired `runExecProcess` to supervisor spawn/wait/cancel.
+- Removed legacy resume cleanup config path.
+- Added/updated tests around supervisor and PTY cleanup behavior.
 
-1. Ownership first: every spawned run is registered with durable identity.
-2. One lifecycle model: PTY and non PTY share the same state machine.
-3. One cancel model: manual cancel, no output timeout, and overall timeout all converge.
-4. Deterministic cleanup: kill by tracked pid or process group, never by text matching.
-5. Observable by default: structured events for spawn, output heartbeats, cancel, exit, cleanup.
-6. Portable behavior: OS specific mechanics hidden behind a narrow interface.
+This is a strong base, but not the final production shape yet.
 
-## Target Architecture
+## 4. Fundamental changes we still need
 
-### Core Components
+These are the key architecture decisions that matter most for production quality.
 
-1. `ProcessSupervisor`
-   - Public API for spawn, cancel, heartbeat updates, and reconciliation.
-2. `RunRegistry`
-   - Durable run ownership records keyed by `runId` (and session metadata).
-3. `ExecutionAdapter`
-   - Transport specific I/O adapters (PTY and non PTY) with the same control contract.
-4. `TerminationController`
-   - Unified cancellation logic using `AbortController` and reasoned deadlines.
-5. `ProcessReaper`
-   - OS aware targeted termination for owned process trees.
+### A. One lifecycle owner (mandatory)
 
-### Packaging And Placement
+Problem:
 
-This rewrite should be implemented as a core internal module in the existing source tree:
+- lifecycle control is split: supervisor manages runs, but `process` still kills via PID tree helpers.
 
-- Path: `src/process/supervisor`
-- Module type: internal source module (no new workspace package)
-- Consumers: core runtime paths (CLI runner, PTY runner, future process based tooling)
+Required change:
 
-It must **not** be implemented under `extensions/*`.
+- supervisor becomes the single authority for run lifecycle.
+- `process` actions should call supervisor APIs for cancel/status paths.
+- avoid duplicate finalization and split ownership.
 
-Rationale:
+Why:
 
-- `extensions/*` are plugin surfaces for channels and optional features.
-- Process supervision is core infra and must be available to core execution paths.
-- Core infra needs strict lifecycle guarantees and cross platform contracts that should not depend on extension loading.
-- `src/process/*` already contains process execution primitives, so colocating supervision there keeps ownership and lifecycle logic together.
+- removes race conditions.
+- prevents state mismatch between registry/session and actual process state.
 
-Initial API boundary for the module:
+### B. Explicit PTY command contract (mandatory)
 
-- `spawn(input): ManagedRun`
-- `cancel(runId, reason)`
-- `reconcileOrphans()`
-- `subscribeLifecycleEvents(listener)`
-- typed models (`RunRecord`, `RunExit`, `TerminationReason`, policy config)
+Problem:
 
-Extraction criteria (future):
+- PTY spawn currently reconstructs command text from `argv` inside supervisor (`join(" ")` semantics in practice).
+- reconstruction is lossy and can break quoting/escaping edge cases.
 
-Only consider moving to a separate repo/package registry after all are true:
+Required change:
 
-- API has stabilized across multiple releases.
-- More than one product/repo needs it directly.
-- We can maintain semver, docs, and Linux/macOS/Windows CI as a library owner.
+- pass PTY command data explicitly.
+- do not rebuild PTY command from generic argv inside supervisor.
 
-Until then, keep it as an internal module under `src/process/supervisor` in this monorepo.
+Why:
 
-### Proposed Interfaces
+- correctness and safety for complex shell arguments.
+- predictable behavior across shells/platforms.
 
-```ts
-type RunState = "starting" | "running" | "exiting" | "exited";
+### C. Remove process -> agents type coupling (mandatory)
 
-type TerminationReason =
-  | "manual-cancel"
-  | "overall-timeout"
-  | "no-output-timeout"
-  | "spawn-error"
-  | "signal"
-  | "exit";
+Problem:
 
-type RunRecord = {
-  runId: string;
-  sessionId: string;
-  backendId: string;
-  pid: number;
-  processGroupId?: number; // POSIX
-  jobId?: string; // Windows abstraction
-  startedAtMs: number;
-  lastOutputAtMs: number;
-  state: RunState;
-};
+- process supervisor adapters import `SessionStdin` from the agents layer.
 
-interface ProcessSupervisor {
-  spawn(input: SpawnInput): Promise<ManagedRun>;
-  cancel(runId: string, reason: TerminationReason): Promise<void>;
-  reconcileOrphans(): Promise<void>;
-}
+Required change:
 
-interface ManagedRun {
-  runId: string;
-  pid: number;
-  wait(): Promise<RunExit>;
-  writeStdin?(chunk: string): void;
-}
-```
+- move stdin contract type to process-level shared types.
+- ensure `src/process/**` does not depend on `src/agents/**` types.
 
-### State Machine
+Why:
 
-`starting -> running -> exiting -> exited`
+- clean layering.
+- easier future reuse and safer refactors.
 
-Rules:
+### D. Decide durability policy explicitly (product decision)
 
-- `starting` becomes `running` only after successful spawn and registry commit.
-- Any timeout or manual cancel transitions to `exiting` with explicit reason.
-- `exited` is terminal and removes active leases.
-- Duplicate cancel requests are idempotent.
+Problem:
 
-## Timeout and Watchdog Model
+- supervisor registry is in-memory only.
+- `reconcileOrphans()` is currently a stub.
 
-Use one `AbortController` tree per run:
+Required decision:
 
-- Root signal: manual cancel.
-- Child deadline: overall timeout.
-- Child deadline: no output timeout (re armed on output heartbeat).
+- choose one:
+  1. keep in-memory only and document restart boundary.
+  2. implement persistent run metadata + reconciliation.
 
-All timeout paths produce structured `TerminationReason` and flow through the same exit finalizer.
+Why:
 
-## Cleanup Model
+- this is a foundational behavior boundary, not a minor detail.
 
-### Spawn Time
+### E. Reduce runtime complexity in `runExecProcess` (strongly recommended)
 
-- Register run ownership immediately after spawn.
-- On POSIX, prefer dedicated process group ownership.
-- On Windows, place process in a managed job boundary abstraction.
+Problem:
 
-### Exit Time
+- one large function currently handles setup, spawn spec, fallback, stream handling, and outcome mapping.
 
-- Mark run exiting.
-- Dispose transport listeners once.
-- Send targeted termination to owned pid or process group only when needed.
-- Finalize registry state and emit exit event once.
+Required change:
 
-### Recovery Path
+- split into focused helpers while preserving behavior.
 
-On startup or supervisor crash recovery:
+Why:
 
-- Read active `RunRecord`s.
-- Verify liveness by exact pid lookup.
-- Reconcile stale records and terminate owned orphans deterministically.
+- improves readability, debugging, and testability.
 
-## Platform Execution Contract
+### F. Single source of truth for watchdog defaults (recommended)
 
-These rules are mandatory for the one go rewrite. If any rule is not met on a platform, the merge is blocked.
+Problem:
 
-### POSIX Contract (Linux and macOS)
+- watchdog defaults are duplicated across backend defaults and runtime resolver logic.
 
-- Every run must own a dedicated process group.
-- Spawn must ensure a stable group leader (`pid == pgid`) for the run root process.
-- Termination must target the run process group, not only the direct child.
-- Graceful termination sequence:
-  - send `SIGTERM` to process group,
-  - wait `graceMs`,
-  - send `SIGKILL` to remaining members.
-- Liveness checks must use pid plus start time fingerprint to avoid pid reuse bugs.
-- Reconciliation must not rely on command text matching.
+Required change:
 
-### Linux Specific Contract
+- centralize defaults and consume from one place.
 
-- Process tree resolution should use `/proc` metadata where available.
-- Reconciliation must verify pid start time from `/proc/<pid>/stat` (or equivalent robust source).
-- Child and grandchild cleanup must work for `bash -lc`, `npm`, and direct exec runs.
+Why:
 
-### macOS Specific Contract
+- avoids config drift and hidden behavior mismatch.
 
-- Process tree resolution should use system process APIs (`libproc` or equivalent) and not assume `/proc`.
-- Reconciliation must verify pid start time via OS level process metadata.
-- Child and grandchild cleanup must work for PTY and non PTY runs, including shell wrapped commands.
+## 5. Cohesive implementation plan
 
-### Windows Contract
-
-- Every run must be attached to a dedicated Job Object (or equivalent abstraction with same guarantees).
-- Job must be configured to terminate the full job tree when cancelled.
-- Termination sequence:
-  - request graceful stop when possible (`CTRL_BREAK` style path for console processes),
-  - force terminate via job termination after `graceMs`.
-- Reconciliation after supervisor restart must terminate the exact recorded root tree using pid plus start time validation.
-- No reliance on command line text parsing for ownership or kill decisions.
+Implement in two phases to reduce risk.
 
-## Process Tree Ownership Contract
+## Phase 1: Architecture hardening (behavior-compatible)
 
-### Shell Wrapper Rules
-
-- Shell wrappers are allowed only if ownership is preserved.
-- Wrapper must `exec` target command where possible so wrapper does not become a stale middle process.
-- If wrapper cannot `exec`, supervisor must still track and terminate the full process group or job tree.
-- Wrapper generated grandchildren are considered part of the run and must be terminated on cancel.
-
-### Child and Grandchild Rules
-
-- Direct child, grandchildren, and deeper descendants must remain within the run ownership boundary.
-- If a subprocess intentionally detaches and escapes ownership boundary, run is marked failed with explicit reason (`ownership-escape`).
-- Background daemons spawned by a run are forbidden unless explicitly declared and adopted by a different owner workflow.
-
-## Run Registry and Reconciliation Contract
-
-### Run Record Requirements
-
-`RunRecord` must include enough data to safely reconcile across restarts:
-
-- `runId`, `sessionId`, `backendId`
-- `pid`
-- process root fingerprint (`startTime` or equivalent)
-- ownership scope (`processGroupId` on POSIX, `jobId` abstraction on Windows)
-- state (`starting|running|exiting|exited`)
-- `createdAtMs`, `updatedAtMs`, `lastOutputAtMs`
-- `ownerInstanceId`
-- `leaseExpiresAtMs`
-
-### Lease and Ownership Rules
-
-- Only one supervisor instance may own an active run lease at a time.
-- Lease heartbeat updates must happen on a fixed interval.
-- A stale lease may be stolen only after `leaseExpiresAtMs`.
-- Lease steal must be atomic and recorded before termination attempts begin.
-
-### Reconciliation Rules
-
-On startup:
-
-1. Load non exited records.
-2. Validate pid plus fingerprint:
-   - if missing or mismatched, mark exited as reconciled stale record.
-3. For live matching records:
-   - if lease owned by this instance, continue supervision.
-   - if lease expired, atomically steal lease and terminate or adopt based on policy.
-   - if lease healthy and owned by another instance, do not touch.
-4. Emit structured reconciliation events for every decision.
-
-## Why This Is Better Than `ps` Regex Cleanup
-
-- No false positives from command line similarities.
-- No accidental kill of unrelated operator processes.
-- Deterministic behavior across backends and sessions.
-- Easier reasoning in incidents because ownership is explicit.
-- Better portability because platform details are isolated.
-
-## One Go Implementation Plan
-
-Ship the rewrite as one cohesive change set behind a short lived feature flag, then flip it as default in the same PR once tests pass.
-
-1. Lock contracts first:
-   - finalize platform execution contract, process ownership contract, and reconciliation contract in this document.
-   - add explicit constants for `graceMs`, lease timings, and timeout defaults.
-2. Build the full supervisor path:
-   - `ProcessSupervisor`, `RunRegistry`, `ExecutionAdapter`, `TerminationController`, `ProcessReaper`.
-   - PTY and non PTY run paths both use this shared contract.
-3. Implement ownership based termination only:
-   - kill by tracked pid or process group or job boundary.
-   - no command line text matching in the new path.
-4. Implement recovery and orphan reconciliation:
-   - on startup, reconcile every active `RunRecord`.
-   - clean stale owned runs deterministically.
-5. Replace old execution wiring completely:
-   - route all spawn, timeout, no output watchdog, manual cancel, and exit finalization through supervisor.
-   - remove legacy cleanup paths from runtime flow.
-6. Add full regression coverage before cutover:
-   - unit, integration, and failure tests listed below must pass.
-7. Cutover in one go:
-   - enable supervisor path by default.
-   - delete dead code and old fallback interfaces in same change set.
-
-Acceptance criteria for merge:
-
-- No runtime dependency on heuristic `ps` command matching.
-- PTY and non PTY share one lifecycle implementation.
-- Timeout reasons are normalized and observable.
-- Startup reconciliation is deterministic.
-- Platform contracts above are implemented and verified on Linux, macOS, and Windows.
-- All targeted tests pass on supported OS environments.
-
-## Testing Strategy
-
-Focus on non performative tests that validate behavior contracts:
-
-1. Unit tests
-   - Termination reason mapping.
-   - Watchdog deadline computation.
-   - Registry state transitions and idempotency.
-2. Integration tests
-   - Real child process with no output timeout.
-   - Real child process with overall timeout.
-   - PTY and non PTY parity for cancel and exit paths.
-   - Shell wrapped run (`bash -lc`/`sh -lc`/`pwsh -Command`) kills full tree.
-   - Direct child plus grandchild tree cleanup works identically across PTY and non PTY.
-   - PID reuse guard (`pid` changed but id reused) does not kill unrelated process.
-3. Failure tests
-   - Supervisor restart with stale `RunRecord`.
-   - Race between exit and timeout.
-   - Duplicate cancel and duplicate finalize calls.
-   - Lease steal race between two supervisor instances.
-   - Ownership escape attempt marks run failed.
-
-## OS Matrix Test Plan
-
-Run this matrix in CI (or gated pre merge runners) for Linux, macOS, and Windows:
-
-1. `direct-exit`
-   - simple command exits normally.
-   - assert `termination=exit`, registry finalized.
-2. `manual-cancel`
-   - long running command canceled by API.
-   - assert tree termination and deterministic exit reason.
-3. `overall-timeout`
-   - command exceeds timeout.
-   - assert reason mapping and cleanup.
-4. `no-output-timeout`
-   - silent command with watchdog.
-   - assert reason mapping and cleanup.
-5. `pty-interactive`
-   - PTY command emits intermittent output.
-   - assert watchdog rearm and no false timeout.
-6. `shell-wrapper-tree`
-   - wrapper spawns child plus grandchild.
-   - assert no descendant remains after cancel.
-7. `restart-reconcile`
-   - crash supervisor mid run, restart, reconcile.
-   - assert stale records resolved and owned processes handled deterministically.
-8. `lease-contention`
-   - two supervisors compete for same run.
-   - assert single owner and no double kill.
-
-## CI And CD Integration Plan
-
-Use the existing CI workflow in this repo:
-
-- `.github/workflows/ci.yml`
-
-Use existing cross platform jobs as the execution lanes:
-
-- Linux lane: `checks`
-- Windows lane: `checks-windows`
-- macOS lane: `macos`
-
-Implementation requirement:
-
-- Add a dedicated process supervisor test command (for example `pnpm test:supervisor:ci`) and run it in all three lanes above.
-- Keep these checks required before merge for the rewrite PR.
-
-Scope trigger requirement:
-
-- Ensure `changed-scope` in `.github/workflows/ci.yml` marks process supervisor changes as Node + macOS relevant, including:
-  - `src/process/supervisor/**`
-  - `src/process/**`
-  - `src/agents/**` paths that consume the supervisor
-  - supervisor specific test files
-- This ensures macOS coverage is actually executed for supervisor changes and not skipped by path filters.
-
-CD policy:
-
-- No release or rollout if any supervisor lane fails on Linux, Windows, or macOS.
-- Main branch cutover is allowed only after all three lanes pass for the final rewrite commit set.
-
-## Operational Metrics
-
-Add counters and structured events:
-
-- `run_spawn_total`
-- `run_exit_total{reason=...}`
-- `run_timeout_total{type=no_output|overall}`
-- `run_cleanup_kill_total{mode=pid|pgid|job}`
-- `run_reconcile_orphans_total`
-- `run_lease_steal_total`
-- `run_ownership_escape_total`
-
-These make regression detection and incident triage straightforward.
-
-## Decision Summary
-
-Long term elegant implementation is a supervisor architecture with explicit ownership, one lifecycle model, one cancellation model, and deterministic cleanup. That is the path that removes process matching heuristics and makes PTY reliability truly production grade.
+1. Lock supervisor as lifecycle owner.
+
+- Add missing supervisor APIs needed by `process` tool operations.
+- Route `process kill/remove` through supervisor cancellation path.
+- Ensure finalization remains idempotent and single-path.
+
+2. Introduce explicit PTY spawn input model.
+
+- Extend supervisor spawn input with PTY-specific command contract.
+- Remove PTY command reconstruction from generic argv.
+- Update exec runtime to pass explicit PTY command data.
+
+3. Decouple process typings from agents.
+
+- Move stdin/session I/O contract type used by supervisor adapters into process-level types.
+- Remove imports from `src/agents/bash-process-registry.ts` in `src/process/supervisor/*`.
+
+4. Refactor `runExecProcess` into helpers.
+
+- Extract:
+  - spawn spec builder
+  - supervisor spawn/fallback helper
+  - stdout/stderr handling helper
+  - exit mapping helper
+- keep external behavior unchanged in this phase.
+
+5. Unify watchdog default constants.
+
+- Centralize watchdog baseline defaults.
+- Use same constants in backend defaults and timeout resolver logic.
+
+Deliverable for Phase 1:
+
+- same user-facing behavior, cleaner contracts, fewer race/coupling risks.
+
+## Phase 2: Durability and reconciliation (if enabled)
+
+1. Implement persistent run metadata store for active runs.
+
+- store `runId`, `pid`, ownership metadata, timestamps, state.
+
+2. Implement real `reconcileOrphans()`.
+
+- on startup:
+  - load active records
+  - verify liveness
+  - resolve stale records
+  - cancel/clean owned orphans deterministically
+
+3. Define and test lease/ownership behavior if multi-instance ownership can happen.
+
+Deliverable for Phase 2:
+
+- consistent restart behavior and deterministic orphan handling.
+
+If durability is explicitly out of scope:
+
+- keep registry in-memory.
+- document that active interactive sessions are not guaranteed across restart.
+
+## 6. File-by-file work map
+
+### Supervisor core
+
+- `src/process/supervisor/types.ts`
+  - add explicit PTY command contract types.
+  - host shared stdin contract types.
+- `src/process/supervisor/supervisor.ts`
+  - remove PTY command reconstruction.
+  - keep one finalize path.
+  - implement real reconciliation if Phase 2 enabled.
+- `src/process/supervisor/registry.ts`
+  - keep idempotent finalize semantics.
+  - extend for durability metadata if Phase 2.
+- `src/process/supervisor/adapters/pty.ts`
+  - preserve kill-settles-wait guarantee.
+  - ensure listener disposal remains exactly-once.
+- `src/process/supervisor/adapters/child.ts`
+  - keep stdin mode correctness and typed contracts.
+
+### Exec/process integration
+
+- `src/agents/bash-tools.exec-runtime.ts`
+  - split monolithic runtime function.
+  - pass explicit PTY contract.
+- `src/agents/bash-tools.exec.ts`
+  - keep orchestration thin.
+  - ensure approvals/safety semantics remain unchanged.
+- `src/agents/bash-tools.process.ts`
+  - call supervisor-driven lifecycle APIs instead of direct PID-tree kill paths where applicable.
+
+### CLI runner integration
+
+- `src/agents/cli-runner.ts`
+  - retain supervisor lifecycle usage and scope ownership semantics.
+- `src/agents/cli-runner/reliability.ts`
+  - consume centralized watchdog defaults.
+- `src/agents/cli-backends.ts`
+  - consume same watchdog defaults source.
+
+## 7. Testing plan
+
+### Must-pass targeted tests
+
+- `src/process/supervisor/registry.test.ts`
+- `src/process/supervisor/supervisor.test.ts`
+- `src/agents/bash-tools.exec.pty-cleanup.test.ts`
+- `src/agents/bash-tools.exec.pty-fallback.e2e.test.ts`
+- `src/agents/bash-tools.exec.background-abort.e2e.test.ts`
+- `src/agents/bash-tools.process.send-keys.e2e.test.ts`
+- `src/agents/cli-runner.e2e.test.ts`
+- `src/process/exec.test.ts`
+
+### Additional tests to add during plan completion
+
+1. PTY command contract tests.
+
+- quoted args and special chars survive exact execution.
+- no join/reconstruction artifacts.
+
+2. Single-owner lifecycle tests.
+
+- `process kill` path converges through supervisor.
+- no duplicate finalize on cancel+exit races.
+
+3. Reconciliation tests (if Phase 2 enabled).
+
+- stale active records are resolved deterministically.
+- live owned runs are reconciled correctly.
+
+## 8. Operational safety requirements
+
+Do not regress these guarantees while refactoring:
+
+- host env variable hardening checks.
+- approval and allowlist policy gates.
+- output sanitization.
+- output memory caps.
+- no broad process-table text matching kill logic.
+
+## 9. Definition of done
+
+This work is complete when all are true:
+
+1. Supervisor is the only lifecycle owner for managed runs.
+2. PTY command handling uses explicit contract, no lossy reconstruction.
+3. Process layer has no type dependency on agents layer.
+4. Watchdog defaults are single-source and consistent.
+5. Targeted tests above are green.
+6. Lint/format checks are green.
+7. Durability boundary is explicit:
+   - either real reconciliation implemented and tested,
+   - or in-memory-only behavior documented as an intentional boundary.
+
+## 10. Rollout strategy
+
+1. Land Phase 1 first (safe refactor + contract hardening).
+2. Keep behavior parity and verify with targeted tests.
+3. If durability is required, land Phase 2 in focused follow-up.
+4. Do not mix unrelated failing suites into acceptance for this plan unless explicitly requested.
+
+## 11. Summary
+
+The right long-term shape is:
+
+- one owner,
+- one lifecycle,
+- explicit PTY command contract,
+- deterministic cleanup,
+- clear restart story.
+
+The current branch already moved strongly in this direction. This plan finishes it in a production-ready, maintainable way.
