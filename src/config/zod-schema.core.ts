@@ -277,12 +277,6 @@ export const CliBackendSchema = z
     serialize: z.boolean().optional(),
     reliability: z
       .object({
-        resumeCleanup: z
-          .object({
-            staleSeconds: z.number().int().positive().optional(),
-          })
-          .strict()
-          .optional(),
         watchdog: z
           .object({
             fresh: z

@@ -50,7 +50,6 @@ const DEFAULT_CLAUDE_BACKEND: CliBackendConfig = {
   systemPromptWhen: "first",
   clearEnv: ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_OLD"],
   reliability: {
-    resumeCleanup: { staleSeconds: 120 },
     watchdog: {
       fresh: {
         noOutputTimeoutRatio: 0.8,
@@ -89,7 +88,6 @@ const DEFAULT_CODEX_BACKEND: CliBackendConfig = {
   imageArg: "--image",
   imageMode: "repeat",
   reliability: {
-    resumeCleanup: { staleSeconds: 120 },
     watchdog: {
       fresh: {
         noOutputTimeoutRatio: 0.8,
@@ -143,10 +141,6 @@ function mergeBackendConfig(base: CliBackendConfig, override?: CliBackendConfig)
     reliability: {
       ...base.reliability,
       ...override.reliability,
-      resumeCleanup: {
-        ...base.reliability?.resumeCleanup,
-        ...override.reliability?.resumeCleanup,
-      },
       watchdog: {
         ...base.reliability?.watchdog,
         ...override.reliability?.watchdog,

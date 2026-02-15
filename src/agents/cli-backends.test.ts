@@ -11,9 +11,6 @@ describe("resolveCliBackendConfig reliability merge", () => {
             "codex-cli": {
               command: "codex",
               reliability: {
-                resumeCleanup: {
-                  staleSeconds: 45,
-                },
                 watchdog: {
                   resume: {
                     noOutputTimeoutMs: 42_000,
@@ -29,7 +26,6 @@ describe("resolveCliBackendConfig reliability merge", () => {
     const resolved = resolveCliBackendConfig("codex-cli", cfg);
 
     expect(resolved).not.toBeNull();
-    expect(resolved?.config.reliability?.resumeCleanup?.staleSeconds).toBe(45);
     expect(resolved?.config.reliability?.watchdog?.resume?.noOutputTimeoutMs).toBe(42_000);
     // Ensure defaults are retained when only one field is overridden.
     expect(resolved?.config.reliability?.watchdog?.resume?.noOutputTimeoutRatio).toBe(0.3);

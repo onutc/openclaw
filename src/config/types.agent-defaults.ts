@@ -93,14 +93,6 @@ export type CliBackendConfig = {
   serialize?: boolean;
   /** Runtime reliability tuning for this backend's process lifecycle. */
   reliability?: {
-    /** Resume-process cleanup controls. */
-    resumeCleanup?: {
-      /**
-       * Consider matching resume processes stale after N seconds and kill them.
-       * Also kills stopped (`T`) matches regardless of age.
-       */
-      staleSeconds?: number;
-    };
     /** No-output watchdog tuning (fresh vs resumed runs). */
     watchdog?: {
       /** Fresh/new sessions (non-resume). */
