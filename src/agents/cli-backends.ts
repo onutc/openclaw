@@ -1,5 +1,9 @@
 import type { OpenClawConfig } from "../config/config.js";
 import type { CliBackendConfig } from "../config/types.js";
+import {
+  CLI_FRESH_WATCHDOG_DEFAULTS,
+  CLI_RESUME_WATCHDOG_DEFAULTS,
+} from "./cli-watchdog-defaults.js";
 import { normalizeProviderId } from "./model-selection.js";
 
 export type ResolvedCliBackend = {
@@ -51,16 +55,8 @@ const DEFAULT_CLAUDE_BACKEND: CliBackendConfig = {
   clearEnv: ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_OLD"],
   reliability: {
     watchdog: {
-      fresh: {
-        noOutputTimeoutRatio: 0.8,
-        minMs: 180_000,
-        maxMs: 600_000,
-      },
-      resume: {
-        noOutputTimeoutRatio: 0.3,
-        minMs: 60_000,
-        maxMs: 180_000,
-      },
+      fresh: { ...CLI_FRESH_WATCHDOG_DEFAULTS },
+      resume: { ...CLI_RESUME_WATCHDOG_DEFAULTS },
     },
   },
   serialize: true,
@@ -89,16 +85,8 @@ const DEFAULT_CODEX_BACKEND: CliBackendConfig = {
   imageMode: "repeat",
   reliability: {
     watchdog: {
-      fresh: {
-        noOutputTimeoutRatio: 0.8,
-        minMs: 180_000,
-        maxMs: 600_000,
-      },
-      resume: {
-        noOutputTimeoutRatio: 0.3,
-        minMs: 60_000,
-        maxMs: 180_000,
-      },
+      fresh: { ...CLI_FRESH_WATCHDOG_DEFAULTS },
+      resume: { ...CLI_RESUME_WATCHDOG_DEFAULTS },
     },
   },
   serialize: true,

@@ -1,4 +1,4 @@
-import type { SessionStdin } from "../../../agents/bash-process-registry.js";
+import type { ManagedRunStdin } from "../types.js";
 
 type PtyExitEvent = { exitCode: number; signal?: number };
 type PtyDisposable = { dispose: () => void };
@@ -7,7 +7,7 @@ type PtySpawnHandle = {
   write: (data: string | Buffer) => void;
   onData: (listener: (value: string) => void) => PtyDisposable | void;
   onExit: (listener: (event: PtyExitEvent) => void) => PtyDisposable | void;
-  kill: () => void;
+  kill: (signal?: string) => void;
 };
 type PtySpawn = (
   file: string,
@@ -44,7 +44,7 @@ function toStringEnv(env?: NodeJS.ProcessEnv): Record<string, string> {
 
 export type PtyAdapter = {
   pid?: number;
-  stdin?: SessionStdin;
+  stdin?: ManagedRunStdin;
   onStdout: (listener: (chunk: string) => void) => void;
   onStderr: (listener: (chunk: string) => void) => void;
   wait: () => Promise<{ code: number | null; signal: NodeJS.Signals | number | null }>;
@@ -89,7 +89,7 @@ export async function createPtyAdapter(params: {
     resolveWait?.(value);
   };
 
-  const stdin: SessionStdin = {
+  const stdin: ManagedRunStdin = {
     destroyed: false,
     write: (data, cb) => {
       try {
@@ -134,7 +134,11 @@ export async function createPtyAdapter(params: {
 
   const kill = (signal: NodeJS.Signals = "SIGKILL") => {
     try {
-      pty.kill();
+      if (process.platform === "win32") {
+        pty.kill();
+      } else {
+        pty.kill(signal);
+      }
     } catch {
       // ignore kill errors
     }

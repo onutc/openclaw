@@ -38,4 +38,46 @@ describe("process supervisor run registry", () => {
     expect(second?.record.exitCode).toBeNull();
     expect(second?.record.exitSignal).toBe("SIGKILL");
   });
+
+  it("prunes oldest exited records once retention cap is exceeded", () => {
+    const registry = createRunRegistry({ maxExitedRecords: 2 });
+    registry.add({
+      runId: "r1",
+      sessionId: "s1",
+      backendId: "b1",
+      state: "running",
+      startedAtMs: 1,
+      lastOutputAtMs: 1,
+      createdAtMs: 1,
+      updatedAtMs: 1,
+    });
+    registry.add({
+      runId: "r2",
+      sessionId: "s2",
+      backendId: "b1",
+      state: "running",
+      startedAtMs: 2,
+      lastOutputAtMs: 2,
+      createdAtMs: 2,
+      updatedAtMs: 2,
+    });
+    registry.add({
+      runId: "r3",
+      sessionId: "s3",
+      backendId: "b1",
+      state: "running",
+      startedAtMs: 3,
+      lastOutputAtMs: 3,
+      createdAtMs: 3,
+      updatedAtMs: 3,
+    });
+
+    registry.finalize("r1", { reason: "exit", exitCode: 0, exitSignal: null });
+    registry.finalize("r2", { reason: "exit", exitCode: 0, exitSignal: null });
+    registry.finalize("r3", { reason: "exit", exitCode: 0, exitSignal: null });
+
+    expect(registry.get("r1")).toBeUndefined();
+    expect(registry.get("r2")?.state).toBe("exited");
+    expect(registry.get("r3")?.state).toBe("exited");
+  });
 });

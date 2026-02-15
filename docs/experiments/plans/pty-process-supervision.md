@@ -8,333 +8,185 @@ title: "PTY and Process Supervision Plan"
 
 # PTY and Process Supervision Plan
 
-## 1. What we are solving
+## 1. Problem and goal
 
-We want reliable interactive command execution for agent workflows.
+We need one reliable lifecycle for long-running command execution across:
 
-In plain language:
+- `exec` foreground runs
+- `exec` background runs
+- `process` follow up actions (`poll`, `log`, `send-keys`, `paste`, `submit`, `kill`, `remove`)
+- CLI agent runner subprocesses
 
-- `exec` should be able to start both normal and terminal-like commands.
-- long-running commands should be safe to background.
-- `process` should let us continue interacting with those runs (poll output, send keys, paste, submit, kill).
-- timeouts and cancellation should be predictable.
-- cleanup must never kill unrelated processes.
+The goal is not just to support PTY. The goal is predictable ownership, cancellation, timeout, and cleanup with no unsafe process matching heuristics.
 
-The core objective is not "add PTY". The objective is one trustworthy lifecycle for process runs.
+## 2. Scope and boundaries
 
-## 2. System goal and boundaries
+- Keep implementation internal in `src/process/supervisor`.
+- Do not create a new package for this.
+- Keep current behavior compatibility where practical.
+- Do not broaden scope to terminal replay or tmux style session persistence.
 
-### Goal
+## 3. Implemented in this branch
 
-Provide a single, production-safe process lifecycle model for:
+### Supervisor baseline already present
 
-- PTY runs (`pty: true`) for terminal-required CLIs.
-- non-PTY runs for normal command execution.
-- background continuation via the `process` tool.
+- Supervisor module is in place under `src/process/supervisor/*`.
+- Exec runtime and CLI runner are already routed through supervisor spawn and wait.
+- Registry finalization is idempotent.
 
-### Non-goals (for this plan)
+### This pass completed
 
-- full terminal multiplexer behavior (tmux-like features).
-- durable terminal replay across restart.
-- introducing a new workspace package for supervisor code.
+1. Explicit PTY command contract
 
-### Scope location
+- `SpawnInput` is now a discriminated union in `src/process/supervisor/types.ts`.
+- PTY runs require `ptyCommand` instead of reusing generic `argv`.
+- Supervisor no longer rebuilds PTY command strings from argv joins in `src/process/supervisor/supervisor.ts`.
+- Exec runtime now passes `ptyCommand` directly in `src/agents/bash-tools.exec-runtime.ts`.
 
-- Keep implementation internal under `src/process/supervisor`.
-- Do not move this to `extensions/*`.
+2. Process layer type decoupling
 
-## 3. Current state (as of this branch)
-
-The branch already moved major lifecycle logic into supervisor:
-
-- Added supervisor module:
-  - `src/process/supervisor/types.ts`
-  - `src/process/supervisor/registry.ts`
-  - `src/process/supervisor/supervisor.ts`
+- Supervisor types no longer import `SessionStdin` from agents.
+- Process local stdin contract lives in `src/process/supervisor/types.ts` (`ManagedRunStdin`).
+- Adapters now depend only on process level types:
   - `src/process/supervisor/adapters/child.ts`
   - `src/process/supervisor/adapters/pty.ts`
-  - `src/process/supervisor/index.ts`
-- Wired CLI runner to supervisor watchdog/scope model.
-- Wired `runExecProcess` to supervisor spawn/wait/cancel.
-- Removed legacy resume cleanup config path.
-- Added/updated tests around supervisor and PTY cleanup behavior.
 
-This is a strong base, but not the final production shape yet.
+3. Process tool lifecycle ownership improvement
 
-## 4. Fundamental changes we still need
+- `src/agents/bash-tools.process.ts` now requests cancellation through supervisor first.
+- `process kill/remove` now use process-tree fallback termination when supervisor lookup misses.
+- `remove` keeps deterministic remove behavior by dropping running session entries immediately after termination is requested.
 
-These are the key architecture decisions that matter most for production quality.
+4. Single source watchdog defaults
 
-### A. One lifecycle owner (mandatory)
+- Added shared defaults in `src/agents/cli-watchdog-defaults.ts`.
+- `src/agents/cli-backends.ts` consumes the shared defaults.
+- `src/agents/cli-runner/reliability.ts` consumes the same shared defaults.
 
-Problem:
+5. Dead helper cleanup
 
-- lifecycle control is split: supervisor manages runs, but `process` still kills via PID tree helpers.
+- Removed unused `killSession` helper path from `src/agents/bash-tools.shared.ts`.
 
-Required change:
+6. Direct supervisor path tests added
 
-- supervisor becomes the single authority for run lifecycle.
-- `process` actions should call supervisor APIs for cancel/status paths.
-- avoid duplicate finalization and split ownership.
+- Added `src/agents/bash-tools.process.supervisor.test.ts` to cover kill and remove routing through supervisor cancellation.
 
-Why:
+7. Reliability gap fixes completed
 
-- removes race conditions.
-- prevents state mismatch between registry/session and actual process state.
+- `src/agents/bash-tools.process.ts` now falls back to real OS-level process termination when supervisor lookup misses.
+- `src/process/supervisor/adapters/child.ts` now uses process-tree termination semantics for default cancel/timeout kill paths.
+- Added shared process-tree utility in `src/process/kill-tree.ts`.
 
-### B. Explicit PTY command contract (mandatory)
+8. PTY contract edge-case coverage added
 
-Problem:
+- Added `src/process/supervisor/supervisor.pty-command.test.ts` for verbatim PTY command forwarding and empty-command rejection.
+- Added `src/process/supervisor/adapters/child.test.ts` for process-tree kill behavior in child adapter cancellation.
 
-- PTY spawn currently reconstructs command text from `argv` inside supervisor (`join(" ")` semantics in practice).
-- reconstruction is lossy and can break quoting/escaping edge cases.
+## 4. Remaining gaps and decisions
 
-Required change:
+### Reliability status
 
-- pass PTY command data explicitly.
-- do not rebuild PTY command from generic argv inside supervisor.
+The two required reliability gaps for this pass are now closed:
 
-Why:
+- `process kill/remove` now has a real OS termination fallback when supervisor lookup misses.
+- child cancel/timeout now uses process-tree kill semantics for default kill path.
+- Regression tests were added for both behaviors.
 
-- correctness and safety for complex shell arguments.
-- predictable behavior across shells/platforms.
+### Durability and startup reconciliation
 
-### C. Remove process -> agents type coupling (mandatory)
+Restart behavior is now explicitly defined as in-memory lifecycle only.
 
-Problem:
+- `reconcileOrphans()` remains a no-op in `src/process/supervisor/supervisor.ts` by design.
+- Active runs are not recovered after process restart.
+- This boundary is intentional for this implementation pass to avoid partial persistence risks.
 
-- process supervisor adapters import `SessionStdin` from the agents layer.
+### Maintainability follow-ups
 
-Required change:
+1. `runExecProcess` in `src/agents/bash-tools.exec-runtime.ts` still handles multiple responsibilities and can be split into focused helpers in a follow-up.
 
-- move stdin contract type to process-level shared types.
-- ensure `src/process/**` does not depend on `src/agents/**` types.
+## 5. Implementation plan
 
-Why:
+The implementation pass for required reliability and contract items is complete.
 
-- clean layering.
-- easier future reuse and safer refactors.
+Completed:
 
-### D. Decide durability policy explicitly (product decision)
+- `process kill/remove` fallback real termination
+- process-tree cancellation for child adapter default kill path
+- regression tests for fallback kill and child adapter kill path
+- PTY command edge-case tests under explicit `ptyCommand`
+- explicit in-memory restart boundary with `reconcileOrphans()` no-op by design
 
-Problem:
+Optional follow-up:
 
-- supervisor registry is in-memory only.
-- `reconcileOrphans()` is currently a stub.
+- split `runExecProcess` into focused helpers with no behavior drift
 
-Required decision:
+## 6. File map
 
-- choose one:
-  1. keep in-memory only and document restart boundary.
-  2. implement persistent run metadata + reconciliation.
+### Process supervisor
 
-Why:
+- `src/process/supervisor/types.ts` updated with discriminated spawn input and process local stdin contract.
+- `src/process/supervisor/supervisor.ts` updated to use explicit `ptyCommand`.
+- `src/process/supervisor/adapters/child.ts` and `src/process/supervisor/adapters/pty.ts` decoupled from agent types.
+- `src/process/supervisor/registry.ts` idempotent finalize unchanged and retained.
 
-- this is a foundational behavior boundary, not a minor detail.
+### Exec and process integration
 
-### E. Reduce runtime complexity in `runExecProcess` (strongly recommended)
+- `src/agents/bash-tools.exec-runtime.ts` updated to pass PTY command explicitly and keep fallback path.
+- `src/agents/bash-tools.process.ts` updated to cancel via supervisor with real process-tree fallback termination.
+- `src/agents/bash-tools.shared.ts` removed direct kill helper path.
 
-Problem:
+### CLI reliability
 
-- one large function currently handles setup, spawn spec, fallback, stream handling, and outcome mapping.
+- `src/agents/cli-watchdog-defaults.ts` added as shared baseline.
+- `src/agents/cli-backends.ts` and `src/agents/cli-runner/reliability.ts` now consume same defaults.
 
-Required change:
+## 7. Validation run in this pass
 
-- split into focused helpers while preserving behavior.
+Unit tests:
 
-Why:
+- `pnpm vitest src/process/supervisor/registry.test.ts`
+- `pnpm vitest src/process/supervisor/supervisor.test.ts`
+- `pnpm vitest src/process/supervisor/supervisor.pty-command.test.ts`
+- `pnpm vitest src/process/supervisor/adapters/child.test.ts`
+- `pnpm vitest src/agents/cli-backends.test.ts`
+- `pnpm vitest src/agents/bash-tools.exec.pty-cleanup.test.ts`
+- `pnpm vitest src/agents/bash-tools.process.poll-timeout.test.ts`
+- `pnpm vitest src/agents/bash-tools.process.supervisor.test.ts`
+- `pnpm vitest src/process/exec.test.ts`
 
-- improves readability, debugging, and testability.
+E2E targets:
 
-### F. Single source of truth for watchdog defaults (recommended)
+- `pnpm test:e2e src/agents/cli-runner.e2e.test.ts`
+- `pnpm test:e2e src/agents/bash-tools.exec.pty-fallback.e2e.test.ts src/agents/bash-tools.exec.background-abort.e2e.test.ts src/agents/bash-tools.process.send-keys.e2e.test.ts`
 
-Problem:
+Typecheck note:
 
-- watchdog defaults are duplicated across backend defaults and runtime resolver logic.
+- `pnpm tsgo` currently fails in this repo due to a pre-existing UI typing dependency issue (`@vitest/browser-playwright` resolution), unrelated to this process supervision work.
 
-Required change:
+## 8. Operational guarantees preserved
 
-- centralize defaults and consume from one place.
-
-Why:
-
-- avoids config drift and hidden behavior mismatch.
-
-## 5. Cohesive implementation plan
-
-Implement in two phases to reduce risk.
-
-## Phase 1: Architecture hardening (behavior-compatible)
-
-1. Lock supervisor as lifecycle owner.
-
-- Add missing supervisor APIs needed by `process` tool operations.
-- Route `process kill/remove` through supervisor cancellation path.
-- Ensure finalization remains idempotent and single-path.
-
-2. Introduce explicit PTY spawn input model.
-
-- Extend supervisor spawn input with PTY-specific command contract.
-- Remove PTY command reconstruction from generic argv.
-- Update exec runtime to pass explicit PTY command data.
-
-3. Decouple process typings from agents.
-
-- Move stdin/session I/O contract type used by supervisor adapters into process-level types.
-- Remove imports from `src/agents/bash-process-registry.ts` in `src/process/supervisor/*`.
-
-4. Refactor `runExecProcess` into helpers.
-
-- Extract:
-  - spawn spec builder
-  - supervisor spawn/fallback helper
-  - stdout/stderr handling helper
-  - exit mapping helper
-- keep external behavior unchanged in this phase.
-
-5. Unify watchdog default constants.
-
-- Centralize watchdog baseline defaults.
-- Use same constants in backend defaults and timeout resolver logic.
-
-Deliverable for Phase 1:
-
-- same user-facing behavior, cleaner contracts, fewer race/coupling risks.
-
-## Phase 2: Durability and reconciliation (if enabled)
-
-1. Implement persistent run metadata store for active runs.
-
-- store `runId`, `pid`, ownership metadata, timestamps, state.
-
-2. Implement real `reconcileOrphans()`.
-
-- on startup:
-  - load active records
-  - verify liveness
-  - resolve stale records
-  - cancel/clean owned orphans deterministically
-
-3. Define and test lease/ownership behavior if multi-instance ownership can happen.
-
-Deliverable for Phase 2:
-
-- consistent restart behavior and deterministic orphan handling.
-
-If durability is explicitly out of scope:
-
-- keep registry in-memory.
-- document that active interactive sessions are not guaranteed across restart.
-
-## 6. File-by-file work map
-
-### Supervisor core
-
-- `src/process/supervisor/types.ts`
-  - add explicit PTY command contract types.
-  - host shared stdin contract types.
-- `src/process/supervisor/supervisor.ts`
-  - remove PTY command reconstruction.
-  - keep one finalize path.
-  - implement real reconciliation if Phase 2 enabled.
-- `src/process/supervisor/registry.ts`
-  - keep idempotent finalize semantics.
-  - extend for durability metadata if Phase 2.
-- `src/process/supervisor/adapters/pty.ts`
-  - preserve kill-settles-wait guarantee.
-  - ensure listener disposal remains exactly-once.
-- `src/process/supervisor/adapters/child.ts`
-  - keep stdin mode correctness and typed contracts.
-
-### Exec/process integration
-
-- `src/agents/bash-tools.exec-runtime.ts`
-  - split monolithic runtime function.
-  - pass explicit PTY contract.
-- `src/agents/bash-tools.exec.ts`
-  - keep orchestration thin.
-  - ensure approvals/safety semantics remain unchanged.
-- `src/agents/bash-tools.process.ts`
-  - call supervisor-driven lifecycle APIs instead of direct PID-tree kill paths where applicable.
-
-### CLI runner integration
-
-- `src/agents/cli-runner.ts`
-  - retain supervisor lifecycle usage and scope ownership semantics.
-- `src/agents/cli-runner/reliability.ts`
-  - consume centralized watchdog defaults.
-- `src/agents/cli-backends.ts`
-  - consume same watchdog defaults source.
-
-## 7. Testing plan
-
-### Must-pass targeted tests
-
-- `src/process/supervisor/registry.test.ts`
-- `src/process/supervisor/supervisor.test.ts`
-- `src/agents/bash-tools.exec.pty-cleanup.test.ts`
-- `src/agents/bash-tools.exec.pty-fallback.e2e.test.ts`
-- `src/agents/bash-tools.exec.background-abort.e2e.test.ts`
-- `src/agents/bash-tools.process.send-keys.e2e.test.ts`
-- `src/agents/cli-runner.e2e.test.ts`
-- `src/process/exec.test.ts`
-
-### Additional tests to add during plan completion
-
-1. PTY command contract tests.
-
-- quoted args and special chars survive exact execution.
-- no join/reconstruction artifacts.
-
-2. Single-owner lifecycle tests.
-
-- `process kill` path converges through supervisor.
-- no duplicate finalize on cancel+exit races.
-
-3. Reconciliation tests (if Phase 2 enabled).
-
-- stale active records are resolved deterministically.
-- live owned runs are reconciled correctly.
-
-## 8. Operational safety requirements
-
-Do not regress these guarantees while refactoring:
-
-- host env variable hardening checks.
-- approval and allowlist policy gates.
-- output sanitization.
-- output memory caps.
-- no broad process-table text matching kill logic.
+- Exec env hardening behavior is unchanged.
+- Approval and allowlist flow is unchanged.
+- Output sanitization and output caps are unchanged.
+- PTY adapter still guarantees wait settlement on forced kill and listener disposal.
 
 ## 9. Definition of done
 
-This work is complete when all are true:
+1. Supervisor is lifecycle owner for managed runs.
+2. PTY spawn uses explicit command contract with no argv reconstruction.
+3. Process layer has no type dependency on agent layer for supervisor stdin contracts.
+4. Watchdog defaults are single source.
+5. Targeted unit and e2e tests remain green.
+6. Restart durability boundary is explicitly documented or fully implemented.
 
-1. Supervisor is the only lifecycle owner for managed runs.
-2. PTY command handling uses explicit contract, no lossy reconstruction.
-3. Process layer has no type dependency on agents layer.
-4. Watchdog defaults are single-source and consistent.
-5. Targeted tests above are green.
-6. Lint/format checks are green.
-7. Durability boundary is explicit:
-   - either real reconciliation implemented and tested,
-   - or in-memory-only behavior documented as an intentional boundary.
+## 10. Summary
 
-## 10. Rollout strategy
+The branch now has a coherent and safer supervision shape:
 
-1. Land Phase 1 first (safe refactor + contract hardening).
-2. Keep behavior parity and verify with targeted tests.
-3. If durability is required, land Phase 2 in focused follow-up.
-4. Do not mix unrelated failing suites into acceptance for this plan unless explicitly requested.
-
-## 11. Summary
-
-The right long-term shape is:
-
-- one owner,
-- one lifecycle,
-- explicit PTY command contract,
-- deterministic cleanup,
-- clear restart story.
-
-The current branch already moved strongly in this direction. This plan finishes it in a production-ready, maintainable way.
+- explicit PTY contract
+- cleaner process layering
+- supervisor driven cancellation path for process operations
+- real fallback termination when supervisor lookup misses
+- process-tree cancellation for child-run default kill paths
+- unified watchdog defaults
+- explicit in-memory restart boundary (no orphan reconciliation across restart in this pass)

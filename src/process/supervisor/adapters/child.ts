@@ -1,5 +1,6 @@
 import type { ChildProcessWithoutNullStreams, SpawnOptions } from "node:child_process";
-import type { SessionStdin } from "../../../agents/bash-process-registry.js";
+import type { ManagedRunStdin } from "../types.js";
+import { killProcessTree } from "../../kill-tree.js";
 import { spawnWithFallback } from "../../spawn-utils.js";
 
 function resolveCommand(command: string): string {
@@ -33,7 +34,7 @@ function toStringEnv(env?: NodeJS.ProcessEnv): Record<string, string> {
 
 export type ChildAdapter = {
   pid?: number;
-  stdin?: SessionStdin;
+  stdin?: ManagedRunStdin;
   onStdout: (listener: (chunk: string) => void) => void;
   onStderr: (listener: (chunk: string) => void) => void;
   wait: () => Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
@@ -58,6 +59,7 @@ export async function createChildAdapter(params: {
     cwd: params.cwd,
     env: toStringEnv(params.env),
     stdio: ["pipe", "pipe", "pipe"],
+    detached: true,
     windowsHide: true,
     windowsVerbatimArguments: params.windowsVerbatimArguments,
   };
@@ -88,7 +90,7 @@ export async function createChildAdapter(params: {
     }
   }
 
-  const stdin: SessionStdin | undefined = child.stdin
+  const stdin: ManagedRunStdin | undefined = child.stdin
     ? {
         destroyed: false,
         write: (data: string, cb?: (err?: Error | null) => void) => {
@@ -136,10 +138,23 @@ export async function createChildAdapter(params: {
     });
 
   const kill = (signal?: NodeJS.Signals) => {
+    const pid = child.pid ?? undefined;
+    if (signal === undefined || signal === "SIGKILL") {
+      if (pid) {
+        killProcessTree(pid);
+      } else {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // ignore kill errors
+        }
+      }
+      return;
+    }
     try {
-      child.kill(signal ?? "SIGKILL");
+      child.kill(signal);
     } catch {
-      // ignore kill errors
+      // ignore kill errors for non-kill signals
     }
   };
 

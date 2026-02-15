@@ -110,17 +110,20 @@ export function createProcessSupervisor(): ProcessSupervisor {
     };
 
     try {
+      if (input.mode === "child" && input.argv.length === 0) {
+        throw new Error("spawn argv cannot be empty");
+      }
       const adapter =
         input.mode === "pty"
           ? await (async () => {
               const { shell, args: shellArgs } = getShellConfig();
-              if (input.argv.length === 0) {
-                throw new Error("spawn argv cannot be empty");
+              const ptyCommand = input.ptyCommand.trim();
+              if (!ptyCommand) {
+                throw new Error("PTY command cannot be empty");
               }
-              const command = [input.argv[0], ...input.argv.slice(1)].join(" ");
               return await createPtyAdapter({
                 shell,
-                args: [...shellArgs, command],
+                args: [...shellArgs, ptyCommand],
                 cwd: input.cwd,
                 env: input.env,
               });
@@ -256,8 +259,8 @@ export function createProcessSupervisor(): ProcessSupervisor {
     cancel,
     cancelScope,
     reconcileOrphans: async () => {
-      // The current implementation keeps ownership in memory only.
-      // Durable reconciliation will be added once persistent registry wiring lands.
+      // Deliberate no-op: this supervisor uses in-memory ownership only.
+      // Active runs are not recovered after process restart in the current model.
     },
     getRecord: (runId: string) => registry.get(runId),
   };

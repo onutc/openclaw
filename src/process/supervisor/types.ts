@@ -1,5 +1,3 @@
-import type { SessionStdin } from "../../agents/bash-process-registry.js";
-
 export type RunState = "starting" | "running" | "exiting" | "exited";
 
 export type TerminationReason =
@@ -42,31 +40,48 @@ export type ManagedRun = {
   runId: string;
   pid?: number;
   startedAtMs: number;
-  stdin?: SessionStdin;
+  stdin?: ManagedRunStdin;
   wait: () => Promise<RunExit>;
   cancel: (reason?: TerminationReason) => void;
 };
 
 export type SpawnMode = "child" | "pty";
 
-export type SpawnInput = {
+export type ManagedRunStdin = {
+  write: (data: string, cb?: (err?: Error | null) => void) => void;
+  end: () => void;
+  destroy?: () => void;
+  destroyed?: boolean;
+};
+
+type SpawnBaseInput = {
   runId?: string;
   sessionId: string;
   backendId: string;
   scopeKey?: string;
   replaceExistingScope?: boolean;
-  mode: SpawnMode;
-  argv: string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-  windowsVerbatimArguments?: boolean;
   timeoutMs?: number;
   noOutputTimeoutMs?: number;
-  input?: string;
-  stdinMode?: "inherit" | "pipe-open" | "pipe-closed";
   onStdout?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
 };
+
+type SpawnChildInput = SpawnBaseInput & {
+  mode: "child";
+  argv: string[];
+  windowsVerbatimArguments?: boolean;
+  input?: string;
+  stdinMode?: "inherit" | "pipe-open" | "pipe-closed";
+};
+
+type SpawnPtyInput = SpawnBaseInput & {
+  mode: "pty";
+  ptyCommand: string;
+};
+
+export type SpawnInput = SpawnChildInput | SpawnPtyInput;
 
 export interface ProcessSupervisor {
   spawn(input: SpawnInput): Promise<ManagedRun>;

@@ -371,13 +371,20 @@ export async function runExecProcess(opts: {
       ? Math.floor(opts.timeoutSec * 1000)
       : undefined;
 
-  const spawnSpec: {
-    mode: "child" | "pty";
-    argv: string[];
-    childFallbackArgv?: string[];
-    env: NodeJS.ProcessEnv;
-    stdinMode: "pipe-open" | "pipe-closed";
-  } = (() => {
+  const spawnSpec:
+    | {
+        mode: "child";
+        argv: string[];
+        env: NodeJS.ProcessEnv;
+        stdinMode: "pipe-open" | "pipe-closed";
+      }
+    | {
+        mode: "pty";
+        ptyCommand: string;
+        childFallbackArgv: string[];
+        env: NodeJS.ProcessEnv;
+        stdinMode: "pipe-open";
+      } = (() => {
     if (opts.sandbox) {
       return {
         mode: "child" as const,
@@ -400,7 +407,7 @@ export async function runExecProcess(opts: {
     if (opts.usePty) {
       return {
         mode: "pty" as const,
-        argv: [execCommand],
+        ptyCommand: execCommand,
         childFallbackArgv: childArgv,
         env: opts.env,
         stdinMode: "pipe-open" as const,
@@ -433,20 +440,30 @@ export async function runExecProcess(opts: {
   };
 
   try {
-    managedRun = await supervisor.spawn({
+    const spawnBase = {
       runId: sessionId,
       sessionId: opts.sessionKey?.trim() || sessionId,
       backendId: opts.sandbox ? "exec-sandbox" : "exec-host",
       scopeKey: opts.scopeKey,
-      mode: spawnSpec.mode,
-      argv: spawnSpec.argv,
       cwd: opts.workdir,
       env: spawnSpec.env,
-      stdinMode: spawnSpec.stdinMode,
       timeoutMs,
       onStdout: onSupervisorStdout,
       onStderr: handleStderr,
-    });
+    };
+    managedRun =
+      spawnSpec.mode === "pty"
+        ? await supervisor.spawn({
+            ...spawnBase,
+            mode: "pty",
+            ptyCommand: spawnSpec.ptyCommand,
+          })
+        : await supervisor.spawn({
+            ...spawnBase,
+            mode: "child",
+            argv: spawnSpec.argv,
+            stdinMode: spawnSpec.stdinMode,
+          });
   } catch (err) {
     if (spawnSpec.mode === "pty") {
       const warning = `Warning: PTY spawn failed (${String(err)}); retrying without PTY for \`${opts.command}\`.`;
@@ -455,20 +472,26 @@ export async function runExecProcess(opts: {
       );
       opts.warnings.push(warning);
       usingPty = false;
-      managedRun = await supervisor.spawn({
-        runId: sessionId,
-        sessionId: opts.sessionKey?.trim() || sessionId,
-        backendId: "exec-host",
-        scopeKey: opts.scopeKey,
-        mode: "child",
-        argv: spawnSpec.childFallbackArgv ?? spawnSpec.argv,
-        cwd: opts.workdir,
-        env: opts.env,
-        stdinMode: "pipe-open",
-        timeoutMs,
-        onStdout: handleStdout,
-        onStderr: handleStderr,
-      });
+      try {
+        managedRun = await supervisor.spawn({
+          runId: sessionId,
+          sessionId: opts.sessionKey?.trim() || sessionId,
+          backendId: "exec-host",
+          scopeKey: opts.scopeKey,
+          mode: "child",
+          argv: spawnSpec.childFallbackArgv,
+          cwd: opts.workdir,
+          env: spawnSpec.env,
+          stdinMode: "pipe-open",
+          timeoutMs,
+          onStdout: handleStdout,
+          onStderr: handleStderr,
+        });
+      } catch (retryErr) {
+        markExited(session, null, null, "failed");
+        maybeNotifyOnExit(session, "failed");
+        throw retryErr;
+      }
     } else {
       markExited(session, null, null, "failed");
       maybeNotifyOnExit(session, "failed");

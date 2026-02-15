@@ -4,6 +4,15 @@ function nowMs() {
   return Date.now();
 }
 
+const DEFAULT_MAX_EXITED_RECORDS = 2_000;
+
+function resolveMaxExitedRecords(value?: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 1) {
+    return DEFAULT_MAX_EXITED_RECORDS;
+  }
+  return Math.max(1, Math.floor(value));
+}
+
 export type RunRegistry = {
   add: (record: RunRecord) => void;
   get: (runId: string) => RunRecord | undefined;
@@ -26,8 +35,35 @@ export type RunRegistry = {
   delete: (runId: string) => void;
 };
 
-export function createRunRegistry(): RunRegistry {
+export function createRunRegistry(options?: { maxExitedRecords?: number }): RunRegistry {
   const records = new Map<string, RunRecord>();
+  const maxExitedRecords = resolveMaxExitedRecords(options?.maxExitedRecords);
+
+  const pruneExitedRecords = () => {
+    if (!records.size) {
+      return;
+    }
+    let exited = 0;
+    for (const record of records.values()) {
+      if (record.state === "exited") {
+        exited += 1;
+      }
+    }
+    if (exited <= maxExitedRecords) {
+      return;
+    }
+    let remove = exited - maxExitedRecords;
+    for (const [runId, record] of records.entries()) {
+      if (remove <= 0) {
+        break;
+      }
+      if (record.state !== "exited") {
+        continue;
+      }
+      records.delete(runId);
+      remove -= 1;
+    }
+  };
 
   const add: RunRegistry["add"] = (record) => {
     records.set(record.runId, { ...record });
@@ -97,6 +133,7 @@ export function createRunRegistry(): RunRegistry {
       updatedAtMs: ts,
     };
     records.set(runId, next);
+    pruneExitedRecords();
     return { record: { ...next }, firstFinalize };
   };
 

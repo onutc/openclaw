@@ -1,17 +1,10 @@
 import path from "node:path";
 import type { CliBackendConfig } from "../../config/types.js";
-
-const DEFAULT_MIN_TIMEOUT_MS = 1_000;
-const DEFAULT_RESUME_WATCHDOG = {
-  noOutputTimeoutRatio: 0.3,
-  minMs: 60_000,
-  maxMs: 180_000,
-};
-const DEFAULT_FRESH_WATCHDOG = {
-  noOutputTimeoutRatio: 0.8,
-  minMs: 180_000,
-  maxMs: 600_000,
-};
+import {
+  CLI_FRESH_WATCHDOG_DEFAULTS,
+  CLI_RESUME_WATCHDOG_DEFAULTS,
+  CLI_WATCHDOG_MIN_TIMEOUT_MS,
+} from "../cli-watchdog-defaults.js";
 
 function pickWatchdogProfile(
   backend: CliBackendConfig,
@@ -22,7 +15,7 @@ function pickWatchdogProfile(
   minMs: number;
   maxMs: number;
 } {
-  const defaults = useResume ? DEFAULT_RESUME_WATCHDOG : DEFAULT_FRESH_WATCHDOG;
+  const defaults = useResume ? CLI_RESUME_WATCHDOG_DEFAULTS : CLI_FRESH_WATCHDOG_DEFAULTS;
   const configured = useResume
     ? backend.reliability?.watchdog?.resume
     : backend.reliability?.watchdog?.fresh;
@@ -39,21 +32,21 @@ function pickWatchdogProfile(
     if (typeof value !== "number" || !Number.isFinite(value)) {
       return defaults.minMs;
     }
-    return Math.max(DEFAULT_MIN_TIMEOUT_MS, Math.floor(value));
+    return Math.max(CLI_WATCHDOG_MIN_TIMEOUT_MS, Math.floor(value));
   })();
   const maxMs = (() => {
     const value = configured?.maxMs;
     if (typeof value !== "number" || !Number.isFinite(value)) {
       return defaults.maxMs;
     }
-    return Math.max(DEFAULT_MIN_TIMEOUT_MS, Math.floor(value));
+    return Math.max(CLI_WATCHDOG_MIN_TIMEOUT_MS, Math.floor(value));
   })();
 
   return {
     noOutputTimeoutMs:
       typeof configured?.noOutputTimeoutMs === "number" &&
       Number.isFinite(configured.noOutputTimeoutMs)
-        ? Math.max(DEFAULT_MIN_TIMEOUT_MS, Math.floor(configured.noOutputTimeoutMs))
+        ? Math.max(CLI_WATCHDOG_MIN_TIMEOUT_MS, Math.floor(configured.noOutputTimeoutMs))
         : undefined,
     noOutputTimeoutRatio: ratio,
     minMs: Math.min(minMs, maxMs),
@@ -68,7 +61,7 @@ export function resolveCliNoOutputTimeoutMs(params: {
 }): number {
   const profile = pickWatchdogProfile(params.backend, params.useResume);
   // Keep watchdog below global timeout in normal cases.
-  const cap = Math.max(DEFAULT_MIN_TIMEOUT_MS, params.timeoutMs - 1_000);
+  const cap = Math.max(CLI_WATCHDOG_MIN_TIMEOUT_MS, params.timeoutMs - 1_000);
   if (profile.noOutputTimeoutMs !== undefined) {
     return Math.min(profile.noOutputTimeoutMs, cap);
   }
