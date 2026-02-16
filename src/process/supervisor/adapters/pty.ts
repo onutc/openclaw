@@ -69,7 +69,7 @@ export async function createPtyAdapter(params: {
   }
   const pty = spawn(params.shell, params.args, {
     cwd: params.cwd,
-    env: toStringEnv(params.env),
+    env: params.env ? toStringEnv(params.env) : undefined,
     name: params.name ?? process.env.TERM ?? "xterm-256color",
     cols: params.cols ?? 120,
     rows: params.rows ?? 30,
@@ -77,18 +77,30 @@ export async function createPtyAdapter(params: {
 
   let dataListener: PtyDisposable | null = null;
   let exitListener: PtyDisposable | null = null;
-  let settled = false;
+  let waitResult: { code: number | null; signal: NodeJS.Signals | number | null } | null = null;
   let resolveWait:
     | ((value: { code: number | null; signal: NodeJS.Signals | number | null }) => void)
     | null = null;
+  let waitPromise: Promise<{ code: number | null; signal: NodeJS.Signals | number | null }> | null =
+    null;
 
   const settleWait = (value: { code: number | null; signal: NodeJS.Signals | number | null }) => {
-    if (settled) {
+    if (waitResult) {
       return;
     }
-    settled = true;
-    resolveWait?.(value);
+    waitResult = value;
+    if (resolveWait) {
+      const resolve = resolveWait;
+      resolveWait = null;
+      resolve(value);
+    }
   };
+
+  exitListener =
+    pty.onExit((event) => {
+      const signal = event.signal && event.signal !== 0 ? event.signal : null;
+      settleWait({ code: event.exitCode ?? null, signal });
+    }) ?? null;
 
   const stdin: ManagedRunStdin = {
     destroyed: false,
@@ -121,17 +133,24 @@ export async function createPtyAdapter(params: {
     // PTY gives a unified output stream.
   };
 
-  const wait = async () =>
-    await new Promise<{ code: number | null; signal: NodeJS.Signals | number | null }>(
-      (resolve) => {
-        resolveWait = resolve;
-        exitListener =
-          pty.onExit((event) => {
-            const signal = event.signal && event.signal !== 0 ? event.signal : null;
-            settleWait({ code: event.exitCode ?? null, signal });
-          }) ?? null;
-      },
-    );
+  const wait = async () => {
+    if (waitResult) {
+      return waitResult;
+    }
+    if (!waitPromise) {
+      waitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | number | null }>(
+        (resolve) => {
+          resolveWait = resolve;
+          if (waitResult) {
+            const settled = waitResult;
+            resolveWait = null;
+            resolve(settled);
+          }
+        },
+      );
+    }
+    return waitPromise;
+  };
 
   const kill = (signal: NodeJS.Signals = "SIGKILL") => {
     try {

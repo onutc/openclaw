@@ -15,12 +15,19 @@ vi.mock("../../kill-tree.js", () => ({
 }));
 
 function createStubPty(pid = 1234) {
+  let exitListener: ((event: { exitCode: number; signal?: number }) => void) | null = null;
   return {
     pid,
     write: vi.fn(),
     onData: vi.fn(() => ({ dispose: vi.fn() })),
-    onExit: vi.fn(() => ({ dispose: vi.fn() })),
+    onExit: vi.fn((listener: (event: { exitCode: number; signal?: number }) => void) => {
+      exitListener = listener;
+      return { dispose: vi.fn() };
+    }),
     kill: (signal?: string) => ptyKillMock(signal),
+    emitExit: (event: { exitCode: number; signal?: number }) => {
+      exitListener?.(event);
+    },
   };
 }
 
@@ -62,6 +69,50 @@ describe("createPtyAdapter", () => {
     adapter.kill();
     expect(killProcessTreeMock).toHaveBeenCalledWith(1234);
     expect(ptyKillMock).not.toHaveBeenCalled();
+  });
+
+  it("resolves wait when exit fires before wait is called", async () => {
+    const stub = createStubPty();
+    spawnMock.mockReturnValue(stub);
+    const { createPtyAdapter } = await import("./pty.js");
+
+    const adapter = await createPtyAdapter({
+      shell: "bash",
+      args: ["-lc", "exit 3"],
+    });
+
+    expect(stub.onExit).toHaveBeenCalledTimes(1);
+    stub.emitExit({ exitCode: 3, signal: 0 });
+    await expect(adapter.wait()).resolves.toEqual({ code: 3, signal: null });
+  });
+
+  it("keeps inherited env when no override env is provided", async () => {
+    const stub = createStubPty();
+    spawnMock.mockReturnValue(stub);
+    const { createPtyAdapter } = await import("./pty.js");
+
+    await createPtyAdapter({
+      shell: "bash",
+      args: ["-lc", "env"],
+    });
+
+    const spawnOptions = spawnMock.mock.calls[0]?.[2] as { env?: Record<string, string> };
+    expect(spawnOptions?.env).toBeUndefined();
+  });
+
+  it("passes explicit env overrides as strings", async () => {
+    const stub = createStubPty();
+    spawnMock.mockReturnValue(stub);
+    const { createPtyAdapter } = await import("./pty.js");
+
+    await createPtyAdapter({
+      shell: "bash",
+      args: ["-lc", "env"],
+      env: { FOO: "bar", COUNT: "12", DROP_ME: undefined },
+    });
+
+    const spawnOptions = spawnMock.mock.calls[0]?.[2] as { env?: Record<string, string> };
+    expect(spawnOptions?.env).toEqual({ FOO: "bar", COUNT: "12" });
   });
 
   it("does not pass a signal to node-pty on Windows", async () => {

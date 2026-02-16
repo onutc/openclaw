@@ -76,4 +76,41 @@ describe("createChildAdapter", () => {
     expect(killProcessTreeMock).not.toHaveBeenCalled();
     expect(killMock).toHaveBeenCalledWith("SIGTERM");
   });
+
+  it("keeps inherited env when no override env is provided", async () => {
+    const { child } = createStubChild(3333);
+    spawnWithFallbackMock.mockResolvedValue({
+      child,
+      usedFallback: false,
+    });
+    const { createChildAdapter } = await import("./child.js");
+    await createChildAdapter({
+      argv: ["node", "-e", "process.exit(0)"],
+      stdinMode: "pipe-open",
+    });
+
+    const spawnArgs = spawnWithFallbackMock.mock.calls[0]?.[0] as {
+      options?: { env?: NodeJS.ProcessEnv };
+    };
+    expect(spawnArgs.options?.env).toBeUndefined();
+  });
+
+  it("passes explicit env overrides as strings", async () => {
+    const { child } = createStubChild(4444);
+    spawnWithFallbackMock.mockResolvedValue({
+      child,
+      usedFallback: false,
+    });
+    const { createChildAdapter } = await import("./child.js");
+    await createChildAdapter({
+      argv: ["node", "-e", "process.exit(0)"],
+      env: { FOO: "bar", COUNT: "12", DROP_ME: undefined },
+      stdinMode: "pipe-open",
+    });
+
+    const spawnArgs = spawnWithFallbackMock.mock.calls[0]?.[0] as {
+      options?: { env?: Record<string, string> };
+    };
+    expect(spawnArgs.options?.env).toEqual({ FOO: "bar", COUNT: "12" });
+  });
 });

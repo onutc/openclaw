@@ -57,7 +57,7 @@ export async function createChildAdapter(params: {
 
   const options: SpawnOptions = {
     cwd: params.cwd,
-    env: toStringEnv(params.env),
+    env: params.env ? toStringEnv(params.env) : undefined,
     stdio: ["pipe", "pipe", "pipe"],
     detached: true,
     windowsHide: true,
