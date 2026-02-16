@@ -20,6 +20,7 @@ function createState(overrides: Partial<CronState> = {}): CronState {
 
 describe("cron controller", () => {
   it("forwards notify in cron.add payload", async () => {
+<<<<<<< HEAD
     const request = vi.fn(async (method: string, _payload?: unknown) => {
       if (method === "cron.add") {
         return { id: "job-1" };
