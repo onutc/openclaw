@@ -41,7 +41,9 @@ jobs:
           RELEASE_MAIN_REF: origin/main
         run: |
           set -euo pipefail
-          git fetch --no-tags origin main --depth=1
+          # Fetch the full main ref so merge-base ancestry checks keep working
+          # for older tagged commits that are still contained in main.
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           pnpm release:publish:check
 
       - name: Ensure version is not already published
